@@ -1,0 +1,257 @@
+---
+title: "Amplicon Data Analysis"
+author: "Maggi Brisbin"
+date: "7/6/2019"
+output:
+  html_document:
+    number_sections: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, fig.path='figures/', fig.width=8, fig.height=5 )
+```
+
+# Introduction
+Amplicon sequencing is called a lot of different things: metabarcoding, tag-sequencing, rRNA sequencing, 16S, 18S, ribosomal RNA, metagenomics (this one is not technically correct), marker-gene sequencing, etc. 
+
+Essentially, amplicon sequencing refers 
+to PCR amplifying a gene of interest (based on the taxonomuc group of interest), then sequencing that those amplicons for many samples of mixed origin (e.g. microbiome, soil, ocean). 
+
+Over the years, there have been several tools developed to analyze this type of data: Mothur, Qiime, Uparse, Usearch, DADA2, MED, Qiime2
+
+Current best practices are denoising algorithms (rather than clustering as was used previously). 
+
+DADA2, Unoise, deblur are denoising algorithms 
+
+Qiime2 wraps DADA2 (or optionally deblur) to denoise amplicon data.
+
+DADA stands for Divisive Amplicon Denoising Algorithm. 
+
+Denoising refers to modeling sequencing errors in a data set in order to identify truly unique sequences (Amplicon Sequence Variants, ASVs).
+
+You can read more about DADA2 here: https://www.nature.com/articles/nmeth.3869
+
+
+# Install Qiime2
+
+https://qiime2.org/
+
+You can install Qiime2 with conda!
+
+```
+wget https://data.qiime2.org/distro/core/qiime2-2019.4-py36-linux-conda.yml
+
+conda env create -n qiime2-2019.4 --file qiime2-2019.4-py36-linux-conda.yml
+```
+
+Activate your qiime2 environment:
+```
+source activate qiime2-2019.4
+```
+# Data and metadata
+In this day and age, you will typically receive paired-end demultiplexed data from your sequencing center. 
+
+Therefore, you will have a directory that will look something like this: 
+
+```
+RSJ2_A10_S73_L001_R1_001.fastq.gz	RSJ2_B2_S10_L001_R1_001.fastq.gz	
+RSJ2_A10_S73_L001_R2_001.fastq.gz	RSJ2_B2_S10_L001_R2_001.fastq.gz	
+RSJ2_A11_S81_L001_R1_001.fastq.gz	RSJ2_B3_S18_L001_R1_001.fastq.gz	
+RSJ2_A11_S81_L001_R2_001.fastq.gz	RSJ2_B3_S18_L001_R2_001.fastq.gz	
+RSJ2_A12_S89_L001_R1_001.fastq.gz	RSJ2_B4_S26_L001_R1_001.fastq.gz	
+```
+
+basically all of your files should look like this with `uniqueID_S##_L001_R1_001.fastq.gz`
+
+you should have `R1` and `R2` for each unique index
+
+All the files you want to include in your analysis should be in one directory and NOTHING else should be in that directory.
+
+You will also need a metadata file that looks somethings like this: 
+
+```
+Sample ID	    Treatment	    Gene
+RSJ1_A1	        t3 H1	        16S
+RSJ1_B1	        t6 C2	        16S
+RSJ1_C1	        t6 H4	        16S
+RSJ1_D1	        t4 C3	        16S
+RSJ1_E1	        t3 H1	        18S
+RSJ1_F1	        t6 C2	        18S
+RSJ1_G1	        t6 H4	        18S
+RSJ1_H1	        t4 C3	        18S
+RSJ1_A2	        t2 H1	        16S
+```
+
+It should be a tab-separated `.txt` file. The first column **has** to be `Sample ID` and include the **entire** "uniqueID" before the `S##_L001_R1_001.fastq.gz` in the file name. 
+
+# Denoising your data and getting a feature table
+
+## Quality Checking
+
+For denoising, you would like to remove low quality bases at the beginning and end of your reads, but all of your sequences have to be the same length. Therefore, we can look at summaries of sequence quality and choose cut offs for the beginning and end of the sequences overall. 
+
+Import your data to qiime:
+
+```
+qiime tools import \
+--type 'SampleData[PairedEndSequencesWithQuality]' \
+--input-path ./RSJ1 \
+--input-format CasavaOneEightSingleLanePerSampleDirFmt \
+--output-path RSJ1_16S_demux-paired-end.qza
+```
+The `--input-path` points to the **directory** with all of the sequences you are included in your analysis.
+
+Next, convert the `.qza` file into a `.qzv` file. 
+
+```
+qiime demux summarize \
+--i-data RSJ1_16S_demux-paired-end.qza \
+--o-visualization RSJ1_16S_demux.qzv
+```
+
+All `.qzv` files can be dragged into the qiime2 website (https://view.qiime2.org/) to be rendered and viewed interactively. 
+
+![](Q2qualityreport.png)
+    
+In this example, we can see that quality starts to drop off in Forward reads around 280 bp and at around 260 bp in the reverse reads. Therefore, we will trucate forward reads at 280bp and truncate reverse reads at 260bp. Just to be sure that we are getting rid of primer seqs, we will also trim the first 10bp of forward and reverse reads. 
+      
+## Denoising with DADA2      
+```
+qiime dada2 denoise-paired \
+    --i-demultiplexed-seqs RSJ1_16S_demux-paired-end.qza \
+    --output-dir ./dd2RSJ1 \
+    --o-representative-sequences RSJ1_16S_rep-seqs \
+    --p-trim-left-f 10 \
+    --p-trim-left-r 10 \
+    --p-trunc-len-f 280 \
+    --p-trunc-len-r 260 \
+    --p-n-threads 3 
+```
+
+I ran this on my laptop, which can have up to 4 threads running, but I ran with `--p-n-threads` equal to 3. If running on an HPC you can have more threads running! Running this on your local machine takes tiiiiime (up to 24 hrs for a single MiSeq run worth of data).
+
+This command will make files, `table.qza` and `denoising_stats.qza` within the `--output-dir`. In order to summarize the results in these tables, use the following commands:
+
+```
+qiime feature-table summarize \
+    --i-table ./dd2RSJ1/table.qza \
+    --o-visualization ./dd2RSJ1/table.qzv \
+    --m-sample-metadata-file ./RSJ1samplemap.txt   
+
+    qiime metadata tabulate \
+    --m-input-file dd2RSJ1/denoising_stats.qza \
+    --o-visualization dd2RSJ1/denoising_stats.qzv
+```
+
+Again, both of these files can be pulled over to https://view.qiime2.org/. 
+
+**Denoising Stats**
+![](Q2denoisingstats.png)
+
+The denoising stats shows you how many raw reads existed in each sample and how many were filtered out at each step.
+
+**Feature table summary**
+![](Q2tablesumm.png)
+
+The table summary will show you how many reads per sample are in the final data set and will tell you how many "features" or ASVs are in your data set. 
+
+# Taxonomy 
+
+First you have to train the feature classifier on the database that you choose (or download a pre-trained classifier): 
+
+Choose your reference database or pre-trained classifier from here:
+https://docs.qiime2.org/2019.4/data-resources/ 
+
+An additional database for microbial euks = https://github.com/pr2database/pr2database 
+
+**If you download the entire SILVA database (132) for example:**
+
+Set variables for the path to the representative sequences and the taxonomy assignments for those sequences: 
+
+Rep_set
+`SILVA97otus=/Users/brisbin/Desktop/SILVA_132_QIIME_release/rep_set/rep_set_16S_only/97/silva_132_97_16S.fna`
+
+Taxonomy
+`Tax97=/Users/brisbin/Desktop/SILVA_132_QIIME_release/taxonomy/16S_only/97/consensus_taxonomy_all_levels.txt`  
+
+Then convert the representative sequences and the taxonomy to qiime files:
+
+```
+    qiime tools import \
+    --type 'FeatureData[Sequence]' \
+    --input-path $SILVA97otus \
+    --output-path 97_otus16.qza
+
+    qiime tools import \
+    --type 'FeatureData[Taxonomy]' \
+    --source-format HeaderlessTSVTaxonomyFormat \
+    --input-path $Tax97 \
+    --output-path 97ref-taxonomy16.qza
+```
+
+Next, train the classifier: 
+(you can optionally select only the gene region you used in your study as the classifier training sequence by supplying your primer sequences, this sometimes leads to more accurate classification)
+
+```
+    qiime feature-classifier fit-classifier-naive-bayes \
+    --i-reference-reads 97_otus16.qza\
+    --i-reference-taxonomy 97ref-taxonomy16.qza\
+    --o-classifier 97classifier16.qza
+```
+
+Finally, assign taxonomy to your ASVs:
+
+```
+    qiime feature-classifier classify-sklearn \
+    --i-classifier 97classifier16.qza \
+    --i-reads 16rep-seqs.qza \
+    --o-classification 16taxonomy.qza
+```
+
+and convert the taxonomy tor a view file:
+
+```
+    qiime metadata tabulate \
+    --m-input-file 16taxonomy.qza \
+    --o-visualization 16taxonomy.qzv
+```
+
+pull over to https://view.qiime2.org/
+
+![](Q2taxonomy.png)
+
+There is a nice package that pulls `.qza` files directly into R, but for taxonomy it only works with certain databases (not SILVA). As a result, its pretty convenient to just click the "Download metadata TSV file" button and then import the `.tsv`
+file to R. 
+
+You can examine alpha and beta diversity with Qiime2, but you get a lot more control and can make much better looking figures if you do these analyses with `phyloseq`. 
+
+# Phyloseq
+
+Phyloseq is a really functional package that helps out with almost all of the analyses you might be interested in performing on microbial amplicon data. 
+
+Phyloseq publication: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0061217
+
+Phyloseq documentation: 
+https://joey711.github.io/phyloseq/import-data.html
+
+Install Phyloseq: 
+
+```
+source('http://bioconductor.org/biocLite.R')
+biocLite('phyloseq')
+```
+
+## data import
+
+Qiime2R is superhelpful for importing qiime2 artifacts for Phyloseq!
+```
+install.packages("devtools") #if you don't have devtools installed
+devtools::install_github("jbisanz/qiime2R")
+```

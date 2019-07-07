@@ -22,13 +22,13 @@ knitr::opts_chunk$set(cache=TRUE, fig.path='figures/', fig.width=8, fig.height=5
 Amplicon sequencing is called a lot of different things: metabarcoding, tag-sequencing, rRNA sequencing, 16S, 18S, ribosomal RNA, metagenomics (this one is not technically correct), marker-gene sequencing, etc. 
 
 Essentially, amplicon sequencing refers 
-to PCR amplifying a gene of interest (based on the taxonomuc group of interest), then sequencing that those amplicons for many samples of mixed origin (e.g. microbiome, soil, ocean). 
+to PCR amplifying part of a particular gene (based on the taxonomic group of interest), then sequencing those amplicons for many samples of mixed origin (e.g. microbiome, soil, ocean). The goal is usually to asses the microbial diversity and community composition in different samples and ultiately determine if different microbes are more or less important in different environments.
 
-Over the years, there have been several tools developed to analyze this type of data: Mothur, Qiime, Uparse, Usearch, DADA2, MED, Qiime2
+Over the years, there have been several tools developed to analyze this type of data: Mothur, Qiime, Uparse, Usearch, DADA2, MED, Qiime2.
 
 Current best practices are denoising algorithms (rather than clustering as was used previously). 
 
-DADA2, Unoise, deblur are denoising algorithms 
+DADA2, Unoise, and deblur are denoising algorithms 
 
 Qiime2 wraps DADA2 (or optionally deblur) to denoise amplicon data.
 
@@ -68,9 +68,7 @@ RSJ2_A11_S81_L001_R2_001.fastq.gz	RSJ2_B3_S18_L001_R2_001.fastq.gz
 RSJ2_A12_S89_L001_R1_001.fastq.gz	RSJ2_B4_S26_L001_R1_001.fastq.gz	
 ```
 
-basically all of your files should look like this with `uniqueID_S##_L001_R1_001.fastq.gz`
-
-you should have `R1` and `R2` for each unique index
+All of your sequences files should be names following this convention: `uniqueID_S##_L001_R1_001.fastq.gz` and you should have an `R1` and `R2` file for each unique ID.
 
 All the files you want to include in your analysis should be in one directory and NOTHING else should be in that directory.
 
@@ -89,7 +87,7 @@ RSJ1_H1	        t4 C3	        18S
 RSJ1_A2	        t2 H1	        16S
 ```
 
-It should be a tab-separated `.txt` file. The first column **has** to be `Sample ID` and include the **entire** "uniqueID" before the `S##_L001_R1_001.fastq.gz` in the file name. 
+It should be a tab-separated `.txt` file. The first column **has** to be `Sample ID` and include the **entire** "uniqueID" before the `_S##_L001_R1_001.fastq.gz` in the file name. 
 
 # Denoising your data and getting a feature table
 
@@ -120,6 +118,7 @@ All `.qzv` files can be dragged into the qiime2 website (https://view.qiime2.org
 
 ![](Q2qualityreport.png)
     
+
 In this example, we can see that quality starts to drop off in Forward reads around 280 bp and at around 260 bp in the reverse reads. Therefore, we will trucate forward reads at 280bp and truncate reverse reads at 260bp. Just to be sure that we are getting rid of primer seqs, we will also trim the first 10bp of forward and reverse reads. 
       
 ## Denoising with DADA2      
@@ -135,7 +134,7 @@ qiime dada2 denoise-paired \
     --p-n-threads 3 
 ```
 
-I ran this on my laptop, which can have up to 4 threads running, but I ran with `--p-n-threads` equal to 3. If running on an HPC you can have more threads running! Running this on your local machine takes tiiiiime (up to 24 hrs for a single MiSeq run worth of data).
+I ran this on my laptop, which can have up to 4 threads running, so I ran with `--p-n-threads` equal to 3. If you are running on an HPC, you can have more threads running! Running this on your local machine takes tiiiiime (up to 24 hrs for a single MiSeq run worth of data).
 
 This command will make files, `table.qza` and `denoising_stats.qza` within the `--output-dir`. In order to summarize the results in these tables, use the following commands:
 
@@ -251,7 +250,294 @@ biocLite('phyloseq')
 ## data import
 
 Qiime2R is superhelpful for importing qiime2 artifacts for Phyloseq!
+
+Install Qiime2R
 ```
 install.packages("devtools") #if you don't have devtools installed
 devtools::install_github("jbisanz/qiime2R")
 ```
+
+Load the qiime2R and phyloseq packages: 
+```{r}
+library(qiime2R)
+library(phyloseq)
+```
+
+we also need ggplot & tidyr:
+```{r}
+library(ggplot2)
+library(tidyr)
+```
+
+
+**load feature table:**
+qiime2R works beautifully with the feature table ...
+
+```{r}
+phyloseq<-qza_to_phyloseq(features="JuneOctMergedTable.qza")
+```
+This alone makes it great. The feature table is the most complicated data artifact to deal with; withou qqime2R, we would need to convert the the `.qza` to a `.biom`. This is essentially what qiime2R is doing under the hood for us.
+
+
+**Load metadata:**
+```{r, warming = FALSE, message = FALSE}
+metatable <- read.csv("JuneOctSampleMap.csv", header = TRUE)
+row.names(metatable) <- metatable[["SampleID"]]
+library("dplyr")
+metatable <- metatable %>% select(SampleID, everything())
+META<- sample_data(metatable)
+```
+
+**load taxonomy:**      
+Unfortunately qiime2R doesn't play well with SILVA taxonomy, so we need to do this manually.
+```{r}
+taxonomy <- read.csv("JuneOctTaxonomy.csv", stringsAsFactors = FALSE)
+names(taxonomy) <- c("row", "tax", "Confidence") #change the headers (column names)
+row.names(taxonomy) <-taxonomy[[1]] #move the feature ID column to become the row names
+taxonomy <- taxonomy[,(-1)] #delete the feature ID  column 
+```
+
+
+The tax column currently looks like this: 
+`D_0__Bacteria;D_1__Cyanobacteria;D_2__Melainabacteria;D_3__Obscuribacterales;D_4__uncultured bacterium;D_5__;D_6__;D_7__;D_8__;D_9__;D_10__;D_11__;D_12__;D_13__;D_14__`
+for each feature. We want to separate the taxonomy levels into different columns and we dont really need to hold on to D_9__ + because these levels are not used for any of our feautures
+```{r}
+taxonomy <-  separate(taxonomy, tax, c("D0","D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14"), sep = ";", fill = "right")
+taxonomy <- taxonomy[,c(1:8)]
+```
+
+Convert the taxonomy dataframe to a matrix, and then to a phyloseq object:
+```{r}
+taxmat <- as.matrix(taxonomy)
+TAX = tax_table(taxmat)
+```
+
+add taxonomy and metadata to phyloseq object:
+```{r}
+ps = merge_phyloseq(phyloseq, TAX, META)
+```
+
+Take a look at your phyloseq object:
+```{r}
+ps
+```
+
+This is actually a pretty big data set with 182 samples. 
+
+We can use phyloseq's great subsetting options to grab a portion of this dataset: 
+
+```{r}
+ps<- subset_samples(ps, Type == "Field" & Month == "June" & Treat != "RS")
+ps
+```
+
+### Prevalence Filtering
+
+Prevalence combines ASV abundance and the number of samples an ASV is found in. If an ASV has really low prevalence, it might be a mistake. It is common to apply 5% prevalence filtering, but it really depends on your data whether this is the best thing to do or not. If you are interested in rare taxa, or if your samples come from really different sources, you probably don't want to apply prevalence filtering. Regardless, its a good initial check that your count data makes sense.  
+
+```{r}
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+```
+
+prevalence plot:
+```{r, warning = FALSE}
+prevplot1<-ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps),color=D1)) +
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) + 
+  theme_bw()+
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~D1) + theme(legend.position="none")
+
+prevplot1
+```
+
+There are definitely some low prevalence taxa. 
+
+Lets just keep the more prevalent groups for relative abundance plots (to decrease the number of colors needed to make the plot, that wont be visible anyways)
+```{r}
+highPrev<-  c("D_1__Acidobacter", "D_1__Actinobacter", "D_1__Bacteroidetes", "D_1__Chloroflexi", "D_1__Cyanobacteria", "D_1__Dadabacteria", "D_1__Epsilonbacteraeota", "D_1__Euryarchaeota", "D_1__Firmicutes", "D_1__Fusobacteria", "D_1__Marinimicrobia (SAR406 clade)", "D_1__Planctomycetes", "D_1__Proteobacteria", "D_1__Rokubacteria", "D_1__Verrucomicrobia", "D_1__Gemmatimonadetes")
+psNHighPrev<- subset_taxa(ps, D1 %in% highPrev)
+```
+
+
+Coverting counts to relative abundance helps normalize the count data for library size. This is not the only (or best) way to normalize for library size but it is used with the Bray-Curtis dissimilarity and is necessary for relative abundance bar plots.
+
+```{r}
+physeqPra<- transform_sample_counts(psNHighPrev, function(OTU) 100* OTU/sum(OTU))
+```
+
+
+Then we can glom the taxa at the D1 level to make the plot cleaner:
+(it also makes the plot build a lot faster)
+```{r}
+glomD1<- tax_glom(physeqPra, "D1")
+```
+
+You can change the order that samples appear on the X axis by adding factor levels to metadata:
+```{r}
+metaField <- metatable[metatable$Treat =="A" & metatable$Month == "June" & metatable$Treat != "RS" , ]
+metaField$Treatment <- factor(metaField$Treatment, levels=c("A1 6/13", "A2 6/13", "A3 6/13", "A4 6/13", "A1 6/16", "A2 6/16", "A3 6/16", "A4 6/16", "A1 6/19", "A2 6/19", "A3 6/19", "A4 6/19"))
+METArs<- sample_data(metaField) # convert adjusted metadata table to phyloseq object
+sample_data(glomD1) <- METArs # add new metadata phyloseq object
+```
+
+Some people care a lot about plot colors ...
+I am one of them. 
+Jcolors is a nice package for plot colors: https://cran.r-project.org/web/packages/jcolors/vignettes/using_the_jcolors_package.html
+
+install Jcolors:
+```
+devtools::install_github("jaredhuling/jcolors")
+```
+Other color packages I really like:
+Wes Anderson movie palettes: https://github.com/karthik/wesanderson
+La Croix palettes: https://github.com/johannesbjork/LaCroixColoR
+Beyonce palettes: https://github.com/dill/beyonce
+
+Load the Jcolors package:
+```{r}
+library(jcolors)
+```
+
+in relative abundance plots you almost *always* need more colors than any single palette provides. You can cat together several palettes: 
+
+```{r}
+j5<- jcolors("pal5")
+j6<-jcolors("pal6")
+j7<-jcolors("pal7")
+j9<-jcolors("pal9")
+colors<- c(j7,j9,j6, j5)
+colors <- rep(colors, 5)
+colors <-c(unname(colors))
+```
+
+
+```{R}
+colors[9] = "#899DA4"
+taxabarplotD1<-plot_bar(glomD1, x= "Treatment", fill = "D1") +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=colors ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D1), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") + ylab("Relative Abundance(%)") + theme(text = element_text(size=14))
+taxabarplotD1+ theme(legend.position="none")
+```
+
+
+ggsave is a fabulous function for saving your plots. It is so smart, it can read file extensions and will create whatever type of file you specify with the file extension. It creates a pdf/jpg/png of whatever plot you made last and saves it in your working directory.
+
+```{r}
+ggsave("Relative_Abundance_Plot.pdf", width = 8, height = 5)
+```
+
+# Alpha Diversity
+
+Phyloseq can compute basic Alpha Diversity metrics: 
+
+*Alpha diversity should be computed on the full, unfiltered data set.*
+
+so we will reorder the raw dataset:
+```{r}
+sample_data(ps) <- METArs # add new metadata phyloseq object
+```
+
+
+```{r}
+plot_richness(ps, measures=c("Observed", "Shannon"), x = "Treatment") + theme_bw() + theme(text = element_text(size=14))+ theme(axis.text.x = element_text(angle = 90))
+```
+
+
+Breakaway is package that integrates with phyloseq and models species richness
+https://github.com/adw96/breakaway
+
+and.. allows for significance testing on differences in richness between sample types
+
+install breakaway:
+
+```
+devtools::install_github("adw96/breakaway")
+```
+
+Load Breakaway library:
+```{r}
+library(breakaway)
+library(tibble)
+```
+
+Run Breakaway and plot the results:
+```{r, warning = FALSE, message  = FALSE}
+
+jba <- breakaway(ps)
+
+jbadf<- summary(jba) %>%
+  add_column("SampleID" = ps %>% otu_table %>% sample_names)
+
+jbadf<- merge(jbadf, metatable, by = "SampleID")
+
+jbaPlot <- ggplot(jbadf, aes(x=Time, y=estimate, fill= Month)) + geom_boxplot() + theme_bw() + theme(text = element_text(size=14)) +ylab("Richness Estimate") +xlab("") +scale_fill_manual(values=c("#42858C"))
+
+jbaPlot
+#ggsave("breakaway_june.png", width = 5, height = 4)
+```
+
+Use the betta function to build a regression model on richness estimates:
+
+```{r}
+obt <- betta(summary(jba)$estimate,
+            summary(jba)$error,
+            make_design_matrix(jbadf, "Time"))
+obt$table
+```
+
+June 16 is significantly more diverse than June 13 and June 19!
+
+# Beta Diversity 
+
+## Bray-Curtis 
+for Bray-Curtis use the relative abundance transformed phyloseq
+```{r}
+ordu = ordinate(physeqPra, "PCoA", "bray")
+p<-plot_ordination(physeqPra, ordu, color="Time")+theme_bw() +scale_color_manual(values=colors)+ geom_point(size=3)+
+  theme(text=element_text(size=14))
+p
+```
+
+Significance testing: 
+
+we need another package - vegan
+http://cc.oulu.fi/~jarioksa/softhelp/vegan.html
+```
+install.packages("vegan",repos="http://r-forge.r-project.org")
+```
+```{r}
+library(vegan)
+```
+
+```{r}
+set.seed(1)
+OTUs <- t(data.frame(otu_table(physeqPra))) #get data frame of symbiont SVs from phyloseq object object
+row.names(OTUs) <- gsub("\\.", "-", row.names(OTUs))
+meta <- metatable[row.names(metatable) %in% row.names(OTUs),]
+meta$Time <-factor( meta$Time , levels=c("13-Jun", "16-Jun", "19-Jun"))# filter sample data to include ONLY the samples included in this analysis. Otherwise, adonis will give an error. 
+
+adonis(vegdist(OTUs, method = "bray") ~ Time, data = meta)
+```
+
+hmm.. not significantly different community composition between dates. 
+
+Can also do pairwise comparisons (but shouldn't really if the PERMANOVA is not significant..)
+
+```
+install.packages("remotes")
+remotes::install_github("vmikk/metagMisc")
+```
+
+```{r}
+library("metagMisc")
+tst<-adonis_pairwise(x=meta, dd=vegdist(OTUs, method = "bray"), group.var="Time")
+tst$Adonis.tab
+```
+
+
+## 
+

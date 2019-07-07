@@ -386,18 +386,18 @@ METArs<- sample_data(metaField) # convert adjusted metadata table to phyloseq ob
 sample_data(glomD1) <- METArs # add new metadata phyloseq object
 ```
 
-Some people care a lot about plot colors ...
-I am one of them. 
-Jcolors is a nice package for plot colors: https://cran.r-project.org/web/packages/jcolors/vignettes/using_the_jcolors_package.html
+Some people care a lot about plot colors ...                
 
+Jcolors is a nice package for plot colors:                           https://cran.r-project.org/web/packages/jcolors/vignettes/using_the_jcolors_package.html
+                                                        
 install Jcolors:
 ```
 devtools::install_github("jaredhuling/jcolors")
 ```
-Other color packages I really like:
-Wes Anderson movie palettes: https://github.com/karthik/wesanderson
-La Croix palettes: https://github.com/johannesbjork/LaCroixColoR
-Beyonce palettes: https://github.com/dill/beyonce
+Other color packages I really like:           
+Wes Anderson movie palettes: https://github.com/karthik/wesanderson               
+La Croix palettes: https://github.com/johannesbjork/LaCroixColoR            
+Beyonce palettes: https://github.com/dill/beyonce               
 
 Load the Jcolors package:
 ```{r}
@@ -584,7 +584,20 @@ tree<-read_qza("rooted-tree.qza")
 ps_uni<- merge_phyloseq(physeqPra, tree$data)
 ```
 
-then use phyloseq again 
+```{r}
+ordu = ordinate(ps_uni, "PCoA", "unifrac", weighted=TRUE)
+p = plot_ordination(ps_uni, ordu, color="Time")+theme_bw() +scale_color_manual(values=colors)+ geom_point(size=3)+
+  theme(text=element_text(size=14))
+p
+```
+
+Just like the relative abundance plots, you can use Qiime2 to make interactive ordination plots for data exploration: 
+
+```
+
+```
+
+
 
 ## Atchison's Distance
 
@@ -594,9 +607,8 @@ install codaseq:
 ```
 devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
 ```
-
 load library:
-```{r}
+```{r, message = FALSE, warning = FALSE}
 library(CoDaSeq)
 ```
 
@@ -609,7 +621,7 @@ BiocManager::install("DESeq2")
 ```
 
 Load library:
-```{r}
+```{r, message = FALSE, warning = FALSE}
 library(DESeq2)
 ```
 

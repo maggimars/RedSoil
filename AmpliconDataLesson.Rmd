@@ -424,7 +424,7 @@ taxabarplotD1+ theme(legend.position="none")
 ```
 
 
-ggsave is a fabulous function for saving your plots. It is so smart, it can read file extensions and will create whatever type of file you specify with the file extension. It creates a pdf/jpg/png of whatever plot you made last and saves it in your working directory.
+`ggsave` is a fabulous function for saving your plots. It is so smart, it can read file extensions and will create whatever type of file you specify with the file extension. It creates a pdf/jpg/png of whatever plot you made last and saves it in your working directory.
 
 ```{r}
 ggsave("Relative_Abundance_Plot.pdf", width = 8, height = 5)
@@ -507,7 +507,7 @@ June 16 is significantly more diverse than June 13 and June 19!
 # Beta Diversity 
 
 ## Bray-Curtis 
-for Bray-Curtis use the relative abundance transformed phyloseq
+For Bray-Curtis, use the relative abundance transformed phyloseq:
 ```{r}
 ordu = ordinate(physeqPra, "PCoA", "bray")
 p<-plot_ordination(physeqPra, ordu, color="Time")+theme_bw() +scale_color_manual(values=colors)+ geom_point(size=3)+
@@ -522,23 +522,27 @@ http://cc.oulu.fi/~jarioksa/softhelp/vegan.html
 ```
 install.packages("vegan",repos="http://r-forge.r-project.org")
 ```
-```{r}
+```{r, warning = FALSE, message = FALSE}
 library(vegan)
 ```
 
+set seed to make results reproducible:
 ```{r}
 set.seed(1)
 OTUs <- t(data.frame(otu_table(physeqPra))) #get data frame of symbiont SVs from phyloseq object object
 row.names(OTUs) <- gsub("\\.", "-", row.names(OTUs))
 meta <- metatable[row.names(metatable) %in% row.names(OTUs),]
-meta$Time <-factor( meta$Time , levels=c("13-Jun", "16-Jun", "19-Jun"))# filter sample data to include ONLY the samples included in this analysis. Otherwise, adonis will give an error. 
+meta$Time <-factor( meta$Time , levels=c("13-Jun", "16-Jun", "19-Jun"))# filter sample data to include ONLY the samples included in this analysis. Otherwise, adonis will give an error.
+```
 
+The `adonis` function from the `vegan` package runs a PERMANOVA or permutational analysis of variance:
+```{r}
 adonis(vegdist(OTUs, method = "bray") ~ Time, data = meta)
 ```
 
-hmm.. not significantly different community composition between dates. 
+There are not significantly different community compositions between dates. 
 
-Can also do pairwise comparisons (but shouldn't really if the PERMANOVA is not significant..)
+Can also do pairwise comparisons (but shouldn't really if the PERMANOVA is not significant..):
 
 ```
 install.packages("remotes")
@@ -559,7 +563,7 @@ Unifrac incorporates phylogenetic distance to determine the dissimilarity betwee
 You can get phylogenetic distances between ASVs using Qiime2:
 
 ```
-qiime alignment mafft \
+    qiime alignment mafft \
     --i-sequences rep-seqs.qza \
     --o-alignment aligned-rep-seqs.qza
 
@@ -580,10 +584,12 @@ And Qiime2R will import your rooted tree:
 ```{r}
 tree<-read_qza("rooted-tree.qza")
 ```
+then add the phylogenetic tree to the phyloseq object that is relative abundance transformed (%):
 ```{r}
 ps_uni<- merge_phyloseq(physeqPra, tree$data)
 ```
 
+Weighted Unifrac distance PCoA:
 ```{r}
 ordu = ordinate(ps_uni, "PCoA", "unifrac", weighted=TRUE)
 p = plot_ordination(ps_uni, ordu, color="Time")+theme_bw() +scale_color_manual(values=colors)+ geom_point(size=3)+
@@ -594,16 +600,64 @@ p
 Just like the relative abundance plots, you can use Qiime2 to make interactive ordination plots for data exploration: 
 
 ```
+qiime diversity core-metrics-phylogenetic \
+    --i-phylogeny rooted-tree.qza \
+    --m-metadata-file sampleMap.txt \
+    --i-table table.qza \
+    --p-sampling-depth 73300 \
+    --output-dir core-metrics-phylogenetic    
+```
+A *very* important point here is the flag `--p-sampling-depth 73300`. Running the `qiime diversity` command in qiime requires that you choose a number of reads to normalize or "rarify" to (in this case 73,300). This means that samples that have more than that number of reads will be randomly subsampled to have exactly that number of reads. Samples that have less reads will be discarded completely. To choose the sampling depth, you often have to make tough decisions about which replictates you can sacrifice versus how much sequencing depth you want to keep. No matter what, you end up throwing out data, which is not preferable. For a deeper discussion check out: https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1003531 by McMurdie & Holmes.
 
+The output of this command will give you: 
+```
+bray_curtis_distance_matrix.qza
+bray_curtis_emperor.qzv
+bray_curtis_pcoa_results.qza
+evenness_vector.qza
+faith_pd_vector.qza
+jaccard_distance_matrix.qza
+jaccard_emperor.qzv
+jaccard_pcoa_results.qza
+observed_otus_vector.qza
+rarefied_table.qza
+shannon_vector.qza
+unweighted_unifrac_distance_matrix.qza
+unweighted_unifrac_emperor.qzv
+unweighted_unifrac_pcoa_results.qza
+weighted_unifrac_distance_matrix.qza
+weighted_unifrac_emperor.qzv
+weighted_unifrac_pcoa_results.qza
 ```
 
+as always, the `.qzv` files are interactive visualizations you can pull over to view.qiime2.org: 
 
+![](q2Braycurtis.png)
+                              
+Likewise, you can do your PERMANOVA significance testing with Qiime2 (pairwise comparisons are included): 
 
-## Atchison's Distance
+```
+qiime diversity beta-group-significance \
+  --i-distance-matrix unweighted_unifrac_distance_matrix.qza \
+  --m-metadata-file sample-metadata.tsv \
+  --m-metadata-column Time \
+  --o-visualization unweighted-unifrac-body-site-significance.qzv \
+  --p-pairwise
+```
 
+![](q2permanova.png)
+(this example screenshot is from the Qiime2 Tutorial)
+                            
+If you want to normalize your count table instead of rerefying it, you can normalize the counts in R and then finish your analysis in R (suggested), or export back to Qiime2.
+
+## Aitchison's Distance
+
+Amplicon data (really all sequencing data) are compositional. Compositional bias makes it challenging to make conclusions about treatment effects, you can read all about that here:
 https://www.frontiersin.org/articles/10.3389/fmicb.2017.02224/full
-
-install codaseq: 
+                                                    
+There are some normalization and ordination methods that specifically aim to minimize compositonal bias. Using a centered-log-ratio (clr) normalization with the Euclidean distance metric is referred to as an Aitchison distance. The package CoDaSeq applies a clr normalization on amplicon count tables:
+                                                                                      
+Install CoDaSeq: 
 ```
 devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
 ```
@@ -612,6 +666,29 @@ load library:
 library(CoDaSeq)
 ```
 
+```{r, message = FALSE, warning = FALSE}
+OTU4clr<- data.frame(t(data.frame(otu_table(ps))))
+row.names(OTU4clr) <- gsub("\\.", "-", row.names(OTU4clr))
+OTUs.clr <- codaSeq.clr(OTU4clr + 0.5, samples.by.row=TRUE)
+OTU2 <- otu_table(as.matrix(OTUs.clr), taxa_are_rows = FALSE)
+
+psCLR <- phyloseq(OTU2,TAX,META)
+```
+
+```{r, message=FALSE}
+
+ordu = ordinate(psCLR, "PCoA", "euclidean")
+p<-plot_ordination(psCLR, ordu, color="Time")+theme_bw() +scale_color_manual(values=colors)+ geom_point(size=4) +  theme(text = element_text(size=14))
+p
+```
+
+And again, you can run a PERMANOVA, this time on the clr transformed data and with `vegdist` set to "euclidean":
+```{r}
+set.seed(1)
+adonis(vegdist(OTUs.clr, method = "euclidean") ~ Time, data = meta)
+```
+            
+For this data set, the results changed very slightly when using taxonomic (unifrac) or non-taxonomic (Bray-Curtis) distances/dissimilarities. Additionally, using a normalization method that minimizes compositional bias did not substantially alter the results. The different methods can produce more differentiated results depending on the dataset. 
 
 # Differential Abundance testing with DESeq2
 

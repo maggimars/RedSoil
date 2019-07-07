@@ -430,6 +430,19 @@ ggsave is a fabulous function for saving your plots. It is so smart, it can read
 ggsave("Relative_Abundance_Plot.pdf", width = 8, height = 5)
 ```
 
+
+Alternatively, you can make interactive taxabarplots in qiime2 for exploratory analysis: 
+```
+qiime taxa barplot \
+--i-table table.qza \
+--i-taxonomy taxonomy.qza \
+--m-metadata-file samplemap.txt \
+--o-visualization taxa-bar-plots.qzv   
+```
+
+![](Q2taxabarplots.png)
+
+
 # Alpha Diversity
 
 Phyloseq can compute basic Alpha Diversity metrics: 
@@ -539,5 +552,67 @@ tst$Adonis.tab
 ```
 
 
-## 
+## Unifrac 
+
+Unifrac incorporates phylogenetic distance to determine the dissimilarity between samples. The metric can be a purely phylogenetic distance (unweighted unifrac) or can include abundance data (nonweighted unifrac).
+
+You can get phylogenetic distances between ASVs using Qiime2:
+
+```
+qiime alignment mafft \
+    --i-sequences rep-seqs.qza \
+    --o-alignment aligned-rep-seqs.qza
+
+    qiime alignment mask \
+    --i-alignment aligned-rep-seqs.qza \
+    --o-masked-alignment masked-aligned-rep-seqs.qza
+
+    qiime phylogeny fasttree \
+    --i-alignment masked-aligned-rep-seqs.qza \
+    --o-tree 16unrooted-tree.qza
+
+    qiime phylogeny midpoint-root \
+    --i-tree unrooted-tree.qza \
+    --o-rooted-tree rooted-tree
+```
+
+And Qiime2R will import your rooted tree: 
+```{r}
+tree<-read_qza("rooted-tree.qza")
+```
+```{r}
+ps_uni<- merge_phyloseq(physeqPra, tree$data)
+```
+
+then use phyloseq again 
+
+## Atchison's Distance
+
+https://www.frontiersin.org/articles/10.3389/fmicb.2017.02224/full
+
+install codaseq: 
+```
+devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
+```
+
+load library:
+```{r}
+library(CoDaSeq)
+```
+
+
+# Differential Abundance testing with DESeq2
+
+Install DESeq2: 
+```
+BiocManager::install("DESeq2")
+```
+
+Load library:
+```{r}
+library(DESeq2)
+```
+
+
+
 

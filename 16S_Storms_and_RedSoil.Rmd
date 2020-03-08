@@ -18,7 +18,7 @@ output:
 knitr::opts_chunk$set(cache=TRUE, fig.path='figures/', fig.width=8, fig.height=5 )
 ```
 
-Load Packages 
+Load Packages: 
 ```{r loadLibraries, message=FALSE, warning =FALSE}
 library("phyloseq")
 library("ggplot2")
@@ -42,64 +42,123 @@ library("ggpubr")
 set.seed(1)
 ```
 
-set colors
-```{r}
-j5<- jcolors("pal5")
-j6<-jcolors("pal6")
-j7<-jcolors("pal7")
-j9<-jcolors("pal9")
-colors<- c(j7,j9,j6, j5)
-colors <- rep(colors, 5)
-colors <-c(unname(colors))
-```
-# 16S Community Composition Analysis
+# Denoising 16S sequences with DADA2 plug-in for QIIME 2
 
+Demultiplexed paired-end sequences provided by the OIST sequencing center were imported to QIIME 2 (v2018.11) software (Bolyen et al. 2019). The Divisive Amplicon Denoising Algorithm (DADA) was implemented with the DADA2 plug-in for QIIME 2 for quality filtering, chimera removal, and feature table construction (Callahan et al. 2015). Denoising was implemented for each sequencing run (one for October and one for June), as is suggested by the developers, and feature tables were then merged. Taxonomy was assigned to Amplicon Sequence Variants (ASVs) in the merged feature table by training a classifier on the SILVA v132 97% consensus 16S taxonomy (Quast et al. 2013). The feature table and assigned taxonomy were then exported from QIIME 2 for further analysis.
+
+*below is a sample workflow for one sequencing run:*
+
+Import the data:
+
+```
+qiime tools import \
+--type 'SampleData[PairedEndSequencesWithQuality]' \
+--input-path ./16seqs \
+--source-format CasavaOneEightSingleLanePerSampleDirFmt \
+--output-path 16demux-paired-end.qza
+```
+
+Run DADA2:
+
+```
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs 16demux-paired-end.qza \
+--output-dir ./16dada2 \
+--o-representative-sequences 16rep-seqs \
+--p-trim-left-f 15 \
+--p-trim-left-r 15 \
+--p-trunc-len-f 295 \
+--p-trunc-len-r 280 \
+--p-n-threads 3   
+```
+
+Merge feature tables from multiple sequencing runs: 
+
+```
+#Feature-Table
 qiime feature-table merge --i-tables RSJ1_2_mergedtable.qza --i-tables 16dada2/16table.qza --o-merged-table JuneOctMergedTable.qza
 
-maggis-MacBook-Pro-2:RedSoilProject brisbin$ qiime feature-table merge-seqs --i-data 16rep-seqs.qza --i-data RSJ1_2_merged-rep-seqs.qza --o-merged-data JuneOctMergedRepSeqs.qza
+#Representative Sequences
+qiime feature-table merge-seqs --i-data 16rep-seqs.qza --i-data RSJ1_2_merged-rep-seqs.qza --o-merged-data JuneOctMergedRepSeqs.qza
+```
 
+Train classifier with SILVA v132 97% consensus 16S taxonomy:
+
+```
+qiime tools import \
+--type 'FeatureData[Sequence]' \
+--input-path $SILVA97otus \
+--output-path 97_otus16.qza
+
+qiime tools import \
+--type 'FeatureData[Taxonomy]' \
+--source-format HeaderlessTSVTaxonomyFormat \
+--input-path $Tax97 \
+--output-path 97ref-taxonomy16.qza
+
+qiime feature-classifier fit-classifier-naive-bayes \
+--i-reference-reads 97_otus16.qza\
+--i-reference-taxonomy 97ref-taxonomy16.qza\
+--o-classifier 97classifier16.qza
+```
+
+Classify the merged Representative Sequences:
+
+```
  qiime feature-classifier classify-sklearn --i-classifier 97classifier16.qza --i-reads JuneOctMergedRepSeqs.qza --o-classification JuneOctMergedTaxonomy.qza
+```
+Export the taxonomic assignments: 
 
+```
 qiime metadata tabulate --m-input-file JuneOctMergedTaxonomy.qza --o-visualization JuneOctMergedTaxonomy.qzv
+```
 
-## Load Data
+# Import QIIME 2 results for further analysis
+
 Load 16S ASV table:
-```{r}
+```{r load_table}
 phyloseq<-qza_to_phyloseq(features="JuneOctMergedTable.qza")
 ```
 
 Load metadata:
-```{r, warming = FALSE, message = FALSE}
+```{r load_metadata, warning = FALSE, message = FALSE}
 metatable <- read.csv("JuneOctSampleMap.csv", header = TRUE)
 row.names(metatable) <- metatable[["SampleID"]]
 detach("package:dplyr", unload=TRUE)
 library("dplyr")
 metatable <- metatable %>% select(SampleID, everything())
+#convert to phyloseq object
 META<- sample_data(metatable)
 ```
 
-load taxonomy:
-```{r}
+Load taxonomy:
+```{r load_tax}
 taxonomy <- read.csv("JuneOctTaxonomy.csv", stringsAsFactors = FALSE)
 names(taxonomy) <- c("row", "tax", "Confidence")
 row.names(taxonomy) <-taxonomy[[1]]
 taxonomy <- taxonomy[,(-1)]
 
+#SILVA taxonomy is in one column, separate to be able to work with different taxonomic levels:
 taxonomy <-  separate(taxonomy, tax, c("D0","D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14"), sep = ";", fill = "right")
+#Keep the first 8 taxonomic levels (no assignments afetr that)
 taxonomy <- taxonomy[,c(1:8)]
 taxmat <- as.matrix(taxonomy)
+#covert taxonomy table to phyloseq object
 TAX = tax_table(taxmat)
 ```
 
-add taxonomy to phyloseq object:
-```{r}
+create phyloseq object including feature table, taxonomy, and metadata:
+```{r make_ps}
 ps = merge_phyloseq(phyloseq, TAX, META)
 ```
 
-## Preprocessing
+# Basic sequencing summary statistics
 
-### Prevalence Filtering
-```{r}
+## Prevalence 
+
+Prevalence is the percent of samples that an ASV is present in.
+
+```{r prev_calc}
 prevdf = apply(X = otu_table(ps),
                MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
                FUN = function(x){sum(x > 0)})
@@ -109,8 +168,8 @@ prevdf = data.frame(Prevalence = prevdf,
                     tax_table(ps))
 ```
 
-prevalence plot:
-```{r, warning = FALSE}
+Plot prevalence against total abundance. Low prevalence and low abundance ASVs are potential sequencing artifacts. 
+```{r prev_plot, warning = FALSE}
 prevplot1<-ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps),color=D1)) +
   geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) + 
   theme_bw()+
@@ -119,15 +178,17 @@ prevplot1<-ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps),color=D1
 
 prevplot1
 ```
+There are a few ASV's that could be filtered out based on prevalence plots, specifically those in groups Diapherotrites, FCPU426, LCP-89, Thermotogae, and WS4. We will leave them, however, because our data set is fairly diverse (soil and water) and these could be taxa found only in one type of sample (i.e. soil). 
 
-##Basic statistics
+## Summary stats
 
-```{r}
+extract ASV table from phyloseq object:
+```{r otutable_ps}
 OTUs <- data.frame(otu_table(ps))
 ```
 
 Total number of ASVs in the data set:
-```{r}
+```{r total_ASVs}
 OTUsRS<- OTUs
 OTUsRS$RowSum <- rowSums(OTUsRS)
 OTUsRSnoZero <- OTUsRS$RowSum!=0
@@ -136,7 +197,7 @@ sum(OTUsRSnoZero)
 
 Total number of ASVs per sample (range and mean):
 
-```{r}
+```{r ASVspersample}
 OTUs0 <- OTUs!=0 #is this number not a zero? true (1) or false (0)
 csums <- colSums(OTUs0) # col sums = observed ASV richness
 csumdf <- as.data.frame(csums)
@@ -145,58 +206,60 @@ min(csumdf$csums) #64
 mean(csumdf$csums) #643
 ```
 
-RSJ1_2mergedDenoisingStats.tsv
-16S_denoisingData.tsv
+Import denoising stats for both sequencing runs and merge them into one table: 
 
-```{r}
+```{r import_denoise_stats}
 RSJ1denoise <- read.table("RSJ1_2mergedDenoisingStats.tsv", header = TRUE)
 Junedenoise <- read.table("16S_denoisingData.tsv", header = TRUE)
 denoise<- rbind(RSJ1denoise,Junedenoise)
 ```
 
-```{r}
+```{r totals_b4_denoise}
 #total seqs before denoise
-sum(denoise$input)
-min(denoise$input)
-max(denoise$input)
-mean(denoise$input)
+sum(denoise$input) #18436424
+min(denoise$input) #76217
+max(denoise$input) #219584
+mean(denoise$input) #137585.3
 ```
 
-```{r}
+```{r totals_after_denoise}
 #totals after denoising
-sum(denoise$non.chimeric)
-min(denoise$non.chimeric)
-max(denoise$non.chimeric)
-mean(denoise$non.chimeric)
+sum(denoise$non.chimeric) #11796526
+min(denoise$non.chimeric) #11061
+max(denoise$non.chimeric) #153646
+mean(denoise$non.chimeric) #88033.78
 ```
 
 
-## Relative Abundance Transformation
-Transform count data to relative abundance (as %) to normalize for differences in library size.
+# Relative Abundance Plots
 
-```{r}
+Remove taxa that are not abundant enough to be visible in relative abundance plot:
+```{r remove_lowprev_4relabund}
 highPrev<-  c("D_1__Acidobacteria", "D_1__Actinobacteria", "D_1__Bacteroidetes", "D_1__Chloroflexi", "D_1__Cyanobacteria", "D_1__Dadabacteria", "D_1__Epsilonbacteraeota", "D_1__Euryarchaeota", "D_1__Firmicutes", "D_1__Fusobacteria", "D_1__Marinimicrobia (SAR406 clade)", "D_1__Planctomycetes", "D_1__Proteobacteria", "D_1__Rokubacteria", "D_1__Verrucomicrobia", "D_1__Gemmatimonadetes")
 psNHighPrev<- subset_taxa(ps, D1 %in% highPrev)
 ```
 
-
-```{r}
+convert counts to relative abundance:
+```{r relabund_transform}
 physeqPra<- transform_sample_counts(psNHighPrev, function(OTU) 100* OTU/sum(OTU))
 ```
 
-glom at D1 
-```{r}
+## Field Samples
+
+### Phylum level
+
+glom at D1 taxonomic level (makes a cleaner plot):
+```{r relabund_D1glom}
 glomD1<- tax_glom(physeqPra, "D1")
 ```
 
-## Taxonomy Barplots
-### Field
-
-```{r}
+subset samples to include only field water samples and red soil samples:
+```{r relabundsub_field_soil}
 psFieldRS<- subset_samples(glomD1, Treat == "A" | Treat == "RS")
 ```
 
-```{r}
+make reative abundance plot at Phylum level:
+```{r relabundplot_field_d1}
 newcolors= c("#332288", "#88CCEE", "#44AA99", "#FFCC00", "#CC3311", "#CC6677", "#FFCCCC", "#999933", "#DDCC77",
              "#EE3377", "#882255", "#AA4499", "#BBCCEE", "#222255", "#CCEEFF", "#DDAA33")
 
@@ -211,8 +274,8 @@ taxabarplotD1+ theme(legend.position="none")
 #ggsave("JuneOctField_RelAbund2.pdf", width = 8, height = 5)
 ```
 
-
-```{r, echo = FALSE}
+Legend:
+```{r relabund_d1_legend, echo = FALSE}
 g_legend<-function(a.gplot){
   tmp <- ggplot_gtable(ggplot_build(a.gplot))
   leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
@@ -223,75 +286,92 @@ legend <- g_legend(taxabarplotD1)
 SVlegend <- grid.arrange(legend)
 ```
 
+### Class Level
 
-glom at D2 
-```{r}
-#glomD2<- tax_glom(physeqPra, "D2")
+```{r relabundplot_field_d2}
+glomD2<- tax_glom(physeqPra, "D2")
 
-# meta4glom3 <- metatable
-# meta4glom3$name <- paste(meta4glom3$Month, meta4glom3$Treatment, sep = " ")
-# c <- meta4glom3[10]
-# 
-# glomD3<- tax_glom(physeqPra, "D3")
-# 
-# df3otu = as.data.frame(otu_table(glomD3))
-# df3otu = t(df3otu)
-# 
-# df3otuWmeta<- merge(meta4glom3, df3otu, by='row.names'  )
-# 
-# row.names(df3otuWmeta) <- df3otuWmeta$name
-# df3otuWmeta <- df3otuWmeta[,-c(1,2)]
-# 
-# df3otu<-t(df3otuWmeta)
-# 
-# df3 <- as.data.frame(glomD3@tax_table@.Data)
-# df3<- df3[,-c(5,6,7,8)]
-# final <- merge(df3, df3otu, by='row.names')
-# 
-# write.csv(final, 'D3relabund.csv', row.names = FALSE)
+psFieldRS<- subset_samples(glomD2, Treat == "A" | Treat == "RS")
+
+#multiply color palette by 100 to have enough colors for the plot
+newcolors= rep(c("#332288", "#88CCEE", "#44AA99", "#FFCC00", "#CC3311", "#CC6677", "#FFCCCC", "#999933", "#DDCC77",
+             "#EE3377", "#882255", "#AA4499", "#BBCCEE", "#222255", "#CCEEFF", "#DDAA33"), 100)
+
+metaFieldRS <- metatable[metatable$Treat =="A" | metatable$Treat == "RS", ]
+metaFieldRS$Treatment <- factor(metaFieldRS$Treatment, levels=c("A1 6/13", "A2 6/13", "A3 6/13", "A4 6/13", "A1 6/16", "A2 6/16", "A3 6/16", "A4 6/16", "A1 6/19", "A2 6/19", "A3 6/19", "A4 6/19", "RS1", "RS2", "RS3", "RS4", "A1 9/28", "A2 9/28", "A3 9/28", "A4 9/28", "A1 10/01", "A2 10/01", "A3 10/01", "A4 10/01", "A1 10/03", "A2 10/03", "A3 10/03", "A4 10/03", "A1 10/08", "A2 10/08", "A3 10/08", "A4 10/08", "RS 2", "RS 3" ))
+METArs<- sample_data(metaFieldRS)
+sample_data(psFieldRS) <- METArs
+
+taxabarplotD2<-plot_bar(psFieldRS, x= "Treatment", fill = "D2", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D2), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14))
+taxabarplotD2+ theme(legend.position="none")
 ```
 
-
-```{r}
-# glomD5<- tax_glom(physeqPra, "D5")
-# 
-# df5otu = as.data.frame(otu_table(glomD5))
-# df5otu = t(df5otu)
-# 
-# df5otuWmeta<- merge(meta4glom3, df5otu, by='row.names'  )
-# 
-# row.names(df3otuWmeta) <- df3otuWmeta$name
-# df3otuWmeta <- df3otuWmeta[,-c(1,2)]
-# 
-# df5otu<-t(df5otuWmeta)
-# df5 <- as.data.frame(glomD5@tax_table@.Data)
-# df5<- df5[,-c(7,8)]
-# final5 <- merge(df5, df5otu, by='row.names')
-
-#write.csv(final, 'D3relabund.csv', row.names = FALSE)
+Legend:
+```{r relabund_d2_legend, echo = FALSE}
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  legend
+}
+legend <- g_legend(taxabarplotD2)
+SVlegend <- grid.arrange(legend)
 ```
 
-
-### Mesocosms
+### Order level
 
 ```{r}
+glomD3<- tax_glom(physeqPra, "D3")
+
+psFieldRS<- subset_samples(glomD3, Treat == "A" | Treat == "RS")
+
+#multiply color palette by 100 to have enough colors for the plot
+newcolors= rep(c("#332288", "#88CCEE", "#44AA99", "#FFCC00", "#CC3311", "#CC6677", "#FFCCCC", "#999933", "#DDCC77",
+             "#EE3377", "#882255", "#AA4499", "#BBCCEE", "#222255", "#CCEEFF", "#DDAA33"), 100)
+
+metaFieldRS <- metatable[metatable$Treat =="A" | metatable$Treat == "RS", ]
+metaFieldRS$Treatment <- factor(metaFieldRS$Treatment, levels=c("A1 6/13", "A2 6/13", "A3 6/13", "A4 6/13", "A1 6/16", "A2 6/16", "A3 6/16", "A4 6/16", "A1 6/19", "A2 6/19", "A3 6/19", "A4 6/19", "RS1", "RS2", "RS3", "RS4", "A1 9/28", "A2 9/28", "A3 9/28", "A4 9/28", "A1 10/01", "A2 10/01", "A3 10/01", "A4 10/01", "A1 10/03", "A2 10/03", "A3 10/03", "A4 10/03", "A1 10/08", "A2 10/08", "A3 10/08", "A4 10/08", "RS 2", "RS 3" ))
+METArs<- sample_data(metaFieldRS)
+sample_data(psFieldRS) <- METArs
+
+taxabarplotD3<-plot_bar(psFieldRS, x= "Treatment", fill = "D3", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors, guide = guide_legend(ncol= 5)) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D3), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14)) 
+taxabarplotD3+ theme(legend.position="none")
+```
+
+Legend:
+```{r relabund_d3_legend, echo = FALSE}
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  legend
+}
+legend <- g_legend(taxabarplotD3)
+SVlegend <- grid.arrange(legend)
+```
+
+## Mesocosm samples
+
+Get ps object with just mesocosm samples:
+```{r relabund_mesofilter}
 psMesoRS<- subset_samples(glomD1, Treat != "A" & Time != "t6" )
-
 ```
 
-```{r}
+Make new metadata column for merging replicates: 
+```{r meso_new_Meta_column}
 metatable900 <- metatable
 metatable900$TreatTime <- paste(metatable$Month, metatable900$Treat, metatable900$Time)
 ```
 
-collapse replicates
-```{r}
+Collapse replicates
+```{r collapseMesoReps}
 ps900 <- subset_samples(psNHighPrev, Treat != "A" & Time != "t6" & Treat != "RS")
 sample_data(ps900) <- metatable900
 mergedps <- merge_samples(ps900, "TreatTime")
 ```
 
-```{r}
+Fix metadata sample names after replicate merging:
+```{r fixMesoMeta_afterMerge}
 meta2<-as.data.frame(sample_data(mergedps))
 split<- do.call(rbind, strsplit(row.names(meta2), " "))
 meta2$Treat <- split[,2]
@@ -303,17 +383,18 @@ META <-sample_data(meta2)
 sample_data(mergedps)<-META
 ```
 
+Relative abundance transformation:
 ```{r}
 physeqPra<- transform_sample_counts(mergedps, function(OTU) 100* OTU/sum(OTU))
 glomD1<- tax_glom(physeqPra, "D1")
 ```
 
-```{R}
-colors[9] = "#899DA4"
+Relative abundance plot: 
+```{R meso_relabund_plot}
 
-glomD1_noFe <- subset_samples(glomD1, Treat != "F")
+glomD1 <- subset_samples(glomD1, Treat != "F")
 
-taxabarplotD1<-plot_bar(glomD1_noFe, x= "SampleName", fill = "D1", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D1), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14))
+taxabarplotD1<-plot_bar(glomD1, x= "SampleName", fill = "D1", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D1), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14))
 taxabarplotD1+ theme(legend.position="none") + xlab("")
 ```
 
@@ -321,8 +402,61 @@ taxabarplotD1+ theme(legend.position="none") + xlab("")
 #ggsave("JuneOctMESOs_RelAbundD1.pdf", width = 8, height = 5)
 ```
 
-Breakaway
-```{r, warning = FALSE, message  = FALSE}
+# Alpha Diversity
+
+## Field Samples
+
+Estimate and plot ASV richness (with Breakaway):
+
+```{r breakawayPlot_field, warning = FALSE, message  = FALSE}
+psba<-  subset_samples(ps, Type == "Field" | Type == "Soil") 
+
+ba <- breakaway(psba)
+
+badf<- summary(ba) %>%
+  add_column("SampleID" = psba %>% otu_table %>% sample_names)
+
+badf<- merge(badf, metatable, by = "SampleID")
+
+badf$Time_f <- factor(badf$Time, levels=c("1", "13-Jun", "16-Jun", "19-Jun", "2", "28-Sep", "1-Oct","3-Oct", "8-Oct"))
+
+
+baPlot <- ggplot(badf, aes(x=Time_f, y=estimate, fill = Month)) +  facet_grid(. ~ Month, scales="free" )+ geom_boxplot() + theme_bw() + theme(text = element_text(size=14)) +ylab("Richness Estimate") +xlab("") + scale_fill_manual(values=c("#004488", "#DDAA33"))+ theme(text = element_text(size=18)) + theme(legend.position="none")
+
+baPlot
+```
+
+Significance testing with DivNet betta function (June):
+```{r breakaway_sig_June}
+psjune <-  subset_samples(ps, Month == "June") 
+psjune <-  subset_samples(psjune, Type == "Field" | Type == "Soil") 
+
+jba <- breakaway(psjune)
+
+jbt <- betta(summary(jba)$estimate,
+            summary(jba)$error,
+            make_design_matrix(psjune, "Time"))
+jbt$table
+```
+
+Significance testing with DivNet betta function (Oct):
+```{r}
+psoct <-  subset_samples(ps, Month == "Oct") 
+psoct <-  subset_samples(psoct, Type == "Field" | Type == "Soil") 
+
+oba <- breakaway(psoct)
+
+obt <- betta(summary(oba)$estimate,
+            summary(oba)$error,
+            make_design_matrix(psoct, "Time"))
+obt$table
+```
+
+## Mesocosm Samples
+
+Estimate and plot ASV richness (with Breakaway):
+
+```{r meso_breakaway_plot, warning = FALSE, message  = FALSE}
 
 psba<-  subset_samples(ps, Type == "Meso" & Time !="t6" & Treat != "F") 
 
@@ -342,8 +476,7 @@ baPlot
 ```
 
 
-
-## Distance and Ordination 
+# Distance and Ordination (PCoA)
 
 *Atchison Distance*
 (CLR + Euclidean)
@@ -352,7 +485,8 @@ baPlot
 * PCoA and/or PCA
 * PERMANOVA 
 
-```{r, message = FALSE, warning = FALSE}
+Centered log-ratio transformation: 
+```{r clr_transform, message = FALSE, warning = FALSE}
 OTU4clr<- data.frame(t(data.frame(otu_table(ps))))
 row.names(OTU4clr) <- gsub("\\.", "", row.names(OTU4clr))
 OTUs.clr <- codaSeq.clr(OTU4clr + 0.5, samples.by.row=TRUE)
@@ -365,66 +499,54 @@ META2<- sample_data(metatable2)
 psCLR <- phyloseq(OTU2,TAX,META2)
 ```
 
-All Samples:
-```{r, message=FALSE}
-P <- brewer.pal(12, "Paired")
+PCoA with All Samples:
+```{r allsample_pcoa, message=FALSE}
 ordu = ordinate(psCLR, "PCoA", "euclidean")
-p<-plot_ordination(psCLR, ordu, color="Type", shape = "Month")+theme_bw() +scale_color_manual(values=P)+ geom_point(size=4) +  theme(text = element_text(size=24))
-p
+plot_ordination(psCLR, ordu, color="Type", shape = "Month")+theme_bw() +scale_color_brewer(palette= "Paired")+ geom_point(size=4) +  theme(text = element_text(size=24))
 ```
 
-Field
-```{r}
+## Field 
+
+```{r field_pcoa}
 psCLRfield <-  subset_samples(psCLR, Type == "Field") 
 ordu = ordinate(psCLRfield, "PCoA", "euclidean")
 
-p<-plot_ordination(psCLRfield, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_manual(values=P)+ geom_point(size=4) +  theme(text = element_text(size=24))
+p<-plot_ordination(psCLRfield, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_manual(values=c("#CC223B","#004488", "#CC223B", "#88CCEE", "#004488","#E6D02E" ,"#88CCEE"))+ geom_point(size=4) +  theme(text = element_text(size=24))
 
 p
 ```
 
-MESO:
-```{r}
-psCLRmeso <-  subset_samples(psCLR, Type == "Meso" & Time != "t6") 
-ordu = ordinate(psCLRmeso, "PCoA", "euclidean")
-pMeso<-plot_ordination(psCLRmeso, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=24))
-pMeso
-```
 
-June Meso: 
-```{r}
-psCLRmesoJ <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="June" & Treat != "F")  
-ordu = ordinate(psCLRmesoJ, "PCoA", "euclidean")
-pMesoJune<-plot_ordination(psCLRmesoJ, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=16))+ ggtitle("June") + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment")
-pMesoJune
-```
+PERMANOVA by month for all field samples: 
+```{r field_permanova}
 
-Oct Meso: 
-```{r}
-psCLRmesoO <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="Oct" &Treat != "F") 
-ordu = ordinate(psCLRmesoO, "PCoA", "euclidean")
-pMesoOct<-plot_ordination(psCLRmesoO, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment") + theme(text = element_text(size=16)) +ggtitle("October")
-pMesoOct
+OTUField <- data.frame(otu_table(psCLRfield))
+meta <- metatable2[row.names(metatable2) %in% row.names(OTUField),]
 
+set.seed(1)
+adonis2(vegdist(OTUField , method = "euclidean") ~ Month, data = meta)
 ```
 
 
-```{r}
-ggarrange(pMesoJune, pMesoOct,   common.legend = TRUE, legend = "bottom")
-ggsave("MESO_PCoA_noFE.png", width = 8, height = 5)
-```
-
-June Field: 
-```{r}
+June and October separate PCoA: 
+```{r juneField_pcoa}
 psCLRfieldjune <-  subset_samples(psCLRfield, Month == "June") 
 ordu = ordinate(psCLRfieldjune, "PCoA", "euclidean")
-pJune<-plot_ordination(psCLRfieldjune, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B", "#88CCEE"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("June") + theme(legend.title = element_blank())
-pJune
+pJune<-plot_ordination(psCLRfieldjune, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B", "#88CCEE"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("A. June") + theme(legend.title = element_blank())
+
+
+psCLRfieldOct <-  subset_samples(psCLR, Month == "Oct" & Type == "Field") 
+ordu = ordinate(psCLRfieldOct, "PCoA", "euclidean")
+
+pOct<-plot_ordination(psCLRfieldOct, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B","#E6D02E" ,"#88CCEE"), limits=c("28-Sep", "1-Oct", "3-Oct", "8-Oct"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18))+ theme(legend.position="bottom") + ggtitle("B. October")
+
+
+grid.arrange(pJune, pOct, ncol=2)
+#ggsave("JuneOct_sepPCoA.pdf", arrangeGrob(pJune, pOct, ncol=2), width = 10, height = 6)
 ```
 
-
-```{r}
-library("metagMisc")
+PERMANOVA by sampling date in June:
+```{r june_sampleDate_permanova}
 metatable_new <- metatable
 row.names(metatable_new) <- gsub("-", "", row.names(metatable))
 row.names(metatable_new) <- gsub("_", "", row.names(metatable_new))
@@ -437,73 +559,9 @@ set.seed(1)
 adonis(vegdist(OTUsJuneField , method = "euclidean") ~ BDA, data = meta)
 ```
 
-```{r}
-tst<-adonis_pairwise(x=meta, dd=vegdist(OTUsJuneField, method = "euclidean"), group.var="BDA")
-tst$Adonis.tab
-```
 
-
-
-Bray-Curtis
-```{r}
-physeqPra<- transform_sample_counts(ps, function(OTU) 100* OTU/sum(OTU))
-
-physeqPrajune <-  subset_samples(physeqPra, Month == "June" & Type == "Field") 
-ordu = ordinate(physeqPrajune, "PCoA", "bray")
-pJune<-plot_ordination(physeqPrajune, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B", "#88CCEE"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("A. June Bray-Curtis") + theme(legend.title = element_blank())
-pJune
-```
-
-```{r}
-raJuneField <- data.frame(t(otu_table(physeqPrajune)))
-meta <- metatable2[row.names(metatable) %in% row.names(raJuneField),]
-
-meta$BDA <- factor(meta$BDA, levels = c("B", "D", "A"))
-
-set.seed(1)
-adonis(vegdist(raJuneField , method = "bray") ~ BDA, data = meta)
-```
-
-```{r}
-tst<-adonis_pairwise(x=meta, dd=vegdist(raJuneField , method = "bray"), group.var="BDA")
-tst$Adonis.tab
-```
-
-
-```{r, warning = FALSE, message  = FALSE}
-psjune <-  subset_samples(ps, Month == "June") 
-psjune <-  subset_samples(psjune, Type == "Field" | Type == "Soil") 
-
-jba <- breakaway(psjune)
-
-jbadf<- summary(jba) %>%
-  add_column("SampleID" = psjune %>% otu_table %>% sample_names)
-
-jbadf<- merge(jbadf, metatable, by = "SampleID")
-
-jbaPlot <- ggplot(jbadf, aes(x=Time, y=estimate, fill = Month)) + geom_boxplot() + theme_bw() + theme(text = element_text(size=14)) +ylab("Richness Estimate") +xlab("") +scale_fill_manual(values=c("#004488"))
-
-jbaPlot
-```
-```{r}
-jbt <- betta(summary(jba)$estimate,
-            summary(jba)$error,
-            make_design_matrix(psjune, "Time"))
-jbt$table
-```
-
-October Field: 
-```{r}
-psCLRfieldOct <-  subset_samples(psCLR, Month == "Oct" & Type == "Field") 
-ordu = ordinate(psCLRfieldOct, "PCoA", "euclidean")
-
-pOct<-plot_ordination(psCLRfieldOct, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B","#E6D02E" ,"#88CCEE"), limits=c("28-Sep", "1-Oct", "3-Oct", "8-Oct"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18))+ theme(legend.position="bottom") + ggtitle("October")
-
-pOct
-```
-
-```{r}
-
+PERMANOVA by sampling date in October:
+```{r oct_sampleDate_permanova}
 OTUsOctField <- data.frame(otu_table(psCLRfieldOct))
 meta <- metatable[row.names(metatable) %in% row.names(OTUsOctField),]
 
@@ -513,77 +571,48 @@ set.seed(1)
 adonis(vegdist(OTUsOctField, method = "euclidean") ~ BDA, data = meta)
 ```
 
-```{r}
-tst<-adonis_pairwise(x=meta, dd=vegdist(OTUsOctField, method = "euclidean"), group.var="BDA")
-tst$Adonis.tab
+
+## Mesocosms 
+
+All mesocosm samples together:
+```{r meso_juneOct_pcoa}
+psCLRmeso <-  subset_samples(psCLR, Type == "Meso" & Time != "t6") 
+ordu = ordinate(psCLRmeso, "PCoA", "euclidean")
+pMeso<-plot_ordination(psCLRmeso, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=24))
+pMeso
 ```
 
-```{r}
-grid.arrange(pJune, pOct, ncol=2)
-```
+June & October Mesocosms plotted separately: 
+```{r JuneOct_AB_meso_pcoa}
+psCLRmesoJ <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="June" & Treat != "F")  
+ordu = ordinate(psCLRmesoJ, "PCoA", "euclidean")
+pMesoJune<-plot_ordination(psCLRmesoJ, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=16))+ ggtitle("A. June") + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment")
 
-```{r}
-ggsave("JuneOct_sepPCoA.png", arrangeGrob(pJune, pOct, ncol=2), width = 10, height = 6)
-```
+psCLRmesoO <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="Oct" &Treat != "F") 
+ordu = ordinate(psCLRmesoO, "PCoA", "euclidean")
+pMesoOct<-plot_ordination(psCLRmesoO, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment") + theme(text = element_text(size=16)) +ggtitle("B. October")
 
-Breakaway
-```{r, warning = FALSE, message  = FALSE}
-psoct <-  subset_samples(ps, Month == "Oct") 
-psoct <-  subset_samples(psoct, Type == "Field" | Type == "Soil") 
-
-oba <- breakaway(psoct)
-
-obadf<- summary(oba) %>%
-  add_column("SampleID" = psoct %>% otu_table %>% sample_names)
-
-obadf<- merge(obadf, data.frame(sample_data(psoct)), by = "SampleID")
-obadf$timeF <- factor(obadf$Time, levels = c("2", "28-Sep", "1-Oct", "3-Oct", "8-Oct"))
-
-obaPlot <- ggplot(obadf, aes(x=timeF, y=estimate, fill = Month)) + geom_boxplot() + theme_bw() + theme(text = element_text(size=14)) +ylab("Richness Estimate") +xlab("") +scale_fill_manual(values=c("#DDAA33"))
-
-obaPlot
-```
-
-```{r}
-obt <- betta(summary(oba)$estimate,
-            summary(oba)$error,
-            make_design_matrix(psoct, "Time"))
-obt$table
+ggarrange(pMesoJune, pMesoOct,   common.legend = TRUE, legend = "bottom")
+#ggsave("MESO_PCoA.png", width = 8, height = 5)
 ```
 
 
-```{r, warning = FALSE, message  = FALSE}
-
-psba<-  subset_samples(ps, Type == "Field" | Type == "Soil") 
-
-ba <- breakaway(psba)
-
-badf<- summary(ba) %>%
-  add_column("SampleID" = psba %>% otu_table %>% sample_names)
-
-badf<- merge(badf, metatable, by = "SampleID")
-
-badf$Time_f <- factor(badf$Time, levels=c("1", "13-Jun", "16-Jun", "19-Jun", "2", "28-Sep", "1-Oct","3-Oct", "8-Oct"))
 
 
-baPlot <- ggplot(badf, aes(x=Time_f, y=estimate, fill = Month)) +  facet_grid(. ~ Month, scales="free" )+ geom_boxplot() + theme_bw() + theme(text = element_text(size=14)) +ylab("Richness Estimate") +xlab("") + scale_fill_manual(values=c("#004488", "#DDAA33"))+ theme(text = element_text(size=18)) + theme(legend.position="none")
 
-baPlot
+
+# Differential Abundance Testing (DESeq2)
+
+## June
+
+### Before (J13) to During (J16)
+
+subset to just field samples:
+```{r fieldonly_ps_forDESeq}
+psF <- subset_samples(ps, Treat == "A" )
 ```
 
-```{r}
-#ggsave("JuneOctBreakaway.pdf", width = 8, height = 5)
-```
-
-
-# Differential Abundance Testing
-
-```{r}
-psF<- subset_taxa(ps, D1 %in% highPrev)
-psF <- subset_samples(psF, Treat == "A" )
-```
-
-for June day 1 and 3
+for June 13th (before) to June 16th (during)
 ```{r}
 psFJune12 <- subset_samples(psF, Time == "13-Jun" | Time=="16-Jun" )
 
@@ -608,11 +637,12 @@ set.seed(50)
 sampleTable<- metatableJ12
 sampleTable$condition <- factor(sampleTable$condition, levels = c("D", "B"))
 ddseJ12 <- DESeqDataSetFromMatrix(countData = OTUspsfieldjune, colData = sampleTable, design = ~ condition)
+ddseJ12$condition <- relevel(ddseJ12$condition, ref = "B")
 ddse2JBD <- DESeq(ddseJ12, test="Wald", fitType="parametric")
 ```
 
 ```{r}
-resJ12<- results(ddse2JBD, alpha = 0.05, cooksCutoff = FALSE )
+resJ12<- results(ddse2JBD, alpha = 0.05, cooksCutoff = FALSE  )
 summary(resJ12)
 ```
 
@@ -620,7 +650,6 @@ summary(resJ12)
 sigtabJ12wSoil = resJ12[which(resJ12$padj < 0.05), ]
 dim(sigtabJ12wSoil)
 ```
-*340 ASVs are differentially abundant!*
 
 add taxonomy to sig tab
 ```{r}
@@ -629,11 +658,11 @@ sigtabJ12wSoil = cbind(as(sigtabJ12wSoil, "data.frame"), as(tax_table(psF)[rowna
 
 Fold Change Figure for Significant SVs:
 ```{r}
-sigplot<- ggplot(sigtabJ12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("June 16 v. June 13 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +  scale_color_manual(values=rep(colors, 2)) 
+sigplot<- ggplot(sigtabJ12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("June 16 v. June 13 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
 sigplot + theme(legend.position="none")
 ```
 
-## DESeq2 : differential abundance testing for day 1 and 6
+### Before (J13) to After (J19)
 
 ```{r}
 psFJune13 <- subset_samples(psF, Time == "13-Jun" | Time=="19-Jun" )
@@ -655,6 +684,7 @@ metatableJ13<-metatableJ13[match(target, metatableJ13$name),]
 sampleTable<- metatableJ13
 
 ddseJ13 <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
+ddseJ13$condition <- relevel(ddseJ13$condition, ref = "B")
 ddse2J13 <- DESeq(ddseJ13, test="Wald", fitType="parametric" )
 
 resJ13<- results(ddse2J13,alpha = 0.05, cooksCutoff = FALSE)
@@ -675,10 +705,12 @@ Fold Change Figure for Significant SVs:
 ```{r}
 sigplot<- ggplot(sigtabJ13wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() +
    ggtitle(" ") +
-  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+      scale_color_manual(values=rep(colors, 2)) 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) 
 sigplot + theme(legend.position="none")
 ```
-## DESeq2 : differential abundance testing for day 3 and 6
+
+
+### During (J16) to After (J19)
 
 ```{r}
 psFJune23 <- subset_samples(psF, Time == "16-Jun" | Time=="19-Jun" )
@@ -705,137 +737,157 @@ resJ23<- results(ddse2J23,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condi
 summary(resJ23)
 ```
 
-WITHOUT SOIL Bacteria
 
-# Remove soil bacteria from water samples
-remove Soil bacteria before running DeSeq2
+### How much SOIL Bacteria?
 
-subtract June red soil bacteria from other June samples ... 
+#### Before (J13) to During (J16)
+
+Total
 ```{r}
-OTUwaterJ <- data.frame(t(data.frame(otu_table(subset_samples(ps, Treat == "A" & Month == "June")))))
-OTUsoilJ <- data.frame(t(data.frame(otu_table(subset_samples(ps, Treat == "RS" & Month =="June"))))) 
 
-OTUsoilJ <- data.frame(OTUsoilJ[,colSums(OTUsoilJ) > 1])
-to.remove <- names(OTUsoilJ)
-`%ni%` <- Negate(`%in%`)
-cleanWaterJ <- as.data.frame(subset(OTUwaterJ, select = names(OTUwaterJ) %ni% to.remove))
+OTUsoilJ <- data.frame(otu_table(subset_samples(ps, Treat == "RS" & Month =="June"))) 
+OTUsoilJ <-OTUsoilJ[rowSums(OTUsoilJ )>0,]
+#4,929 ASV in SOIL samples 
 
-OTUj <- otu_table(as.matrix(cleanWaterJ), taxa_are_rows = FALSE)
-metatable3<- metatable
-row.names(metatable3) <- gsub("-", ".", row.names(metatable3))
-META2<- sample_data(metatable3)
+sigtabJ12wSoil$Soil <- ifelse((row.names(sigtabJ12wSoil)) %in% row.names(OTUsoilJ), "Yes", "No")
 
-ps.CWj<-phyloseq(OTUj, META2, TAX)
+sum(sigtabJ12wSoil$Soil=="Yes")
 ```
 
-for June B v D
-
+over abundant?
 ```{r}
-psFJune12sansS <- subset_samples(ps.CWj, Time == "13-Jun" | Time=="16-Jun" )
-
-juneSS <- data.frame(t(otu_table(psFJune12sansS)))
-
-names(juneSS) <- gsub("\\.", "", names(juneSS))
-
-aldex.in <- juneSS[rowSums(juneSS)>=0,]
-
-target <- names(juneSS)
-metatableJ12<-metatableJ12[match(target, metatableJ12$name),]
-
-sampleTable<- metatableJ12
-ddseJss <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2Jss <- DESeq(ddseJss, test="Wald", fitType="parametric" )
-resJss<- results(ddse2Jss,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "D", "B"))
-summary(resJss)
-```
-
-```{r}
-sigtabJss = resJss[which(resJss$padj < 0.05), ]
-sigtabJss = cbind(as(sigtabJss, "data.frame"), as(tax_table(ps.CWj)[rownames(sigtabJss), ], "matrix"))
-```
-
-
-For June B - A
-```{r}
-psFJune13sansS <- subset_samples(ps.CWj, Time == "13-Jun" | Time=="19-Jun" )
-
-juneSS <- data.frame(t(otu_table(psFJune13sansS)))
-
-names(juneSS) <- gsub("\\.", "", names(juneSS))
-
-aldex.in <- juneSS[rowSums(juneSS)>=0,]
-
-target <- names(juneSS)
-metatableJ13<-metatableJ13[match(target, metatableJ13$name),]
-
-sampleTable<- metatableJ13
-ddseJss <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2Jss <- DESeq(ddseJss, test="Wald", fitType="parametric" )
-resJss<- results(ddse2Jss,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "A", "B"))
-summary(resJss)
-```
-
-For June D - A
-```{r}
-psFJune23sansS <- subset_samples(ps.CWj, Time == "16-Jun" | Time=="19-Jun" )
-
-juneSS <- data.frame(t(otu_table(psFJune23sansS)))
-
-names(juneSS) <- gsub("\\.", "", names(juneSS))
-
-aldex.in <- juneSS[rowSums(juneSS)>=0,]
-
-target <- names(juneSS)
-metatableJ23<-metatableJ23[match(target, metatableJ23$name),]
-
-sampleTable<- metatableJ23
-ddseJss <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2Jss <- DESeq(ddseJss, test="Wald", fitType="parametric" )
-resJss<- results(ddse2Jss,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "A", "D"))
-summary(resJss)
-```
-
-
-# Remove soil bacteria from water samples
-subtract red soil bacteria from other samples ... 
-```{r}
-
-sigtabJ12wSoil$Soil <- ifelse((row.names(sigtabJ12wSoil)) %in% row.names(sigtabJss), "No", "Yes")
-
-sum(sigtabJ12wSoil$Soil=="No")
+sum(sigtabJ12wSoil[sigtabJ12wSoil$log2FoldChange>0,]$Soil=="Yes")
 ```
 
 ```{r}
 sigtabJ12wSoil$D1 <- substring(sigtabJ12wSoil$D1, 6)
+sigtabJ12wSoil$D2 <- substring(sigtabJ12wSoil$D2, 6)
+sigtabJ12wSoil$D3 <- substring(sigtabJ12wSoil$D3, 6)
+```
+
+```{R}
+sigtabJ12wSoil$ASV_ID <- row.names(sigtabJ12wSoil)
+
+sigtabJ12wSoil_O <- sigtabJ12wSoil[order(sigtabJ12wSoil$D1),]
+
+sigtabJ12wSoil_O <- sigtabJ12wSoil_O %>% filter( D3 != "Chloroplast" & D3 != "uncultured bacterium" & D3 != "uncultured" & D3 != "Subgroup 2" & D3 != "") %>% filter(!is.na(D3))
+
+uniqueD3 <- unique(sigtabJ12wSoil_O$D3)
+
+sigtabJ12wSoil_O$D3 <- factor(sigtabJ12wSoil_O$D3, levels = uniqueD3)
 ```
 
 ```{r}
-sigplotJune12<- ggplot(sigtabJ12wSoil, aes(x=D1, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ scale_color_manual(values= c("#628395", "#FC471E" ) ) +ggtitle("A. June 16 v. June 13") + theme(text = element_text(size=12)) + xlab("")
-sigplotJune12 
+sigplotJune12<- ggplot(sigtabJ12wSoil_O, aes(x=D3, y=log2FoldChange, color = D1, shape = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +ggtitle("A. June 16 v. June 13") + theme(text = element_text(size=12)) + xlab("")
+sigplotJune12 + theme(legend.position="none")
+```
+
+
+```{r}
+legend <- g_legend(sigplotJune12)
+SVlegend <- grid.arrange(legend)
+```
+ 
+
+```{r}
+sigplotJune12<- ggplot(sigtabJ12wSoil_O, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + scale_color_manual(values= c("#628395", "#FC471E" ) )+ theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +ggtitle("A. June 16 v. June 13") + theme(text = element_text(size=12)) + xlab("")
+sigplotJune12 + theme(legend.position="none")
 ```
 
 ```{r}
-#ggsave("June16June13_retest_foldchange.png", width=7, height =5)
+#ggsave("June16June13_retest_foldchange.eps", width=9, height =5)
 ```
 
-After v. Before
+
+#### Before (J13) to After (J19)
+
+total:
 ```{r}
-sigtabJ13wSoil$Soil <- ifelse((row.names(sigtabJ13wSoil)) %in% row.names(sigtabJss), "Yes", "No")
+sigtabJ13wSoil$Soil <- ifelse((row.names(sigtabJ13wSoil)) %in% row.names(OTUsoilJ), "Yes", "No")
+
+sigtabJ13wSoil$D1 <- substring(sigtabJ13wSoil$D1, 6)
+sigtabJ13wSoil$D2 <- substring(sigtabJ13wSoil$D2, 6)
+sigtabJ13wSoil$D3 <- substring(sigtabJ13wSoil$D3, 6)
+```
+
+over abundant?
+```{r}
+sum(sigtabJ13wSoil[sigtabJ13wSoil$log2FoldChange>0,]$Soil=="Yes")
+```
+
+under?
+```{r}
+sum(sigtabJ13wSoil[sigtabJ13wSoil$log2FoldChange<0,]$Soil=="Yes")
+```
+
+```{R}
+sigtabJ13wSoil$ASV_ID <- row.names(sigtabJ13wSoil)
+
+sigtabJ13wSoil_O <- sigtabJ13wSoil[order(sigtabJ13wSoil$D1),]
+
+sigtabJ13wSoil_O <- sigtabJ13wSoil_O %>% filter( D3 != "Chloroplast" & D3 != "uncultured bacterium" & D3 != "uncultured") %>% filter(!is.na(D3))
+
+uniqueD3 <- unique(sigtabJ13wSoil_O$D3)
+
+sigtabJ13wSoil_O$D3 <- factor(sigtabJ13wSoil_O$D3, levels = uniqueD3)
+
 ```
 
 ```{r}
-sigplot<- ggplot(sigtabJ13wSoil, aes(x=D1, y=log2FoldChange, color = Soil)) + geom_point(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() +
-   ggtitle(" ") +
-  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ scale_color_manual(values= c("#628395", "#FC471E" ) ) +ggtitle("June 19 v. June 13")
-sigplot 
+sigplotJune13<- ggplot(sigtabJ13wSoil_O, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + scale_color_manual(values= c("#628395", "#FC471E" ) )+ theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +ggtitle("B. June 19 v. June 13") + theme(text = element_text(size=12)) + xlab("")
+sigplotJune13 + theme(legend.position="none")
 ```
 
 
-OCTOBER
+```{r}
+#ggsave("June19June13_retest_foldchange.pdf", width=1.5, height =5)
+```
 
-# Differential Abundance Testing
+FACET
 
-October B -D
+```{r}
+sigtabJ12wSoil_O$test <- "DB"
+sigtabJ13wSoil_O$test <- "AB"
+
+sigtabJfacet<- rbind(sigtabJ12wSoil_O, sigtabJ13wSoil_O)
+
+#change sign of fold change so plot works when I rotate it 90 degrees in illustrator
+
+sigtabJfacet$log2FoldChange <- sigtabJfacet$log2FoldChange * -1
+
+facetsigplot<- ggplot(sigtabJfacet, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + scale_color_manual(values= c("#628395", "#FC471E" ) )+ theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ theme(text = element_text(size=12)) + xlab("") + facet_grid(~test, scales="free_x", space = "free")
+facetsigplot + theme(legend.position="none")
+```
+
+```{r}
+#ggsave("June_Facet_foldchange.pdf", width=9, height =5)
+```
+
+
+#### During (J16) to During (J19)
+
+total:
+```{r}
+sigtabJ23wSoil = resJ23[which(resJ23$padj < 0.05), ]
+sigtabJ23wSoil$Soil <- ifelse((row.names(sigtabJ23wSoil)) %in% row.names(OTUsoilJ), "Yes", "No")
+sum(sigtabJ23wSoil$Soil=="Yes")
+```
+
+over abundant?
+```{r}
+sum(sigtabJ23wSoil[sigtabJ23wSoil$log2FoldChange>0,]$Soil=="Yes")
+```
+
+under?
+```{r}
+sum(sigtabJ23wSoil[sigtabJ23wSoil$log2FoldChange<0,]$Soil=="Yes")
+```
+
+
+## OCTOBER
+
+### Before (S28) to During (O01 + O03)
+
 ```{r}
 psFoct12 <- subset_samples(psF, Time == "28-Sep" | Time=="1-Oct" | Time =="3-Oct")
 
@@ -856,16 +908,15 @@ resO12<- results(ddse2O12,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condi
 summary(resO12)
 ```
 
-
 ```{r}
 sigtabO12wSoil = resO12[which(resO12$padj < 0.05), ]
 sigtabO12wSoil = cbind(as(sigtabO12wSoil, "data.frame"), as(tax_table(psF)[rownames(sigtabO12wSoil), ], "matrix"))
-sigplot<- ggplot(sigtabO12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("Oct. 1 v. Sept. 28 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +  scale_color_manual(values=rep(colors, 2)) 
+sigplot<- ggplot(sigtabO12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("Oct. 1 v. Sept. 28 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
 sigplot + theme(legend.position="none")
 ```
 
+### Before (S28) to After (O08)
 
-October B to A
 ```{r}
 psFoct13 <- subset_samples(psF, Time == "28-Sep" | Time=="8-Oct")
 
@@ -886,7 +937,8 @@ resO13<- results(ddse2O13,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condi
 summary(resO13)
 ```
 
-During v After
+### During (O01 + O03) to After (O08)
+
 ```{r}
 psFoct23 <- subset_samples(psF, Time == "8-Oct" | Time=="1-Oct" | Time =="3-Oct")
 
@@ -907,127 +959,147 @@ resO23<- results(ddse2O23,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condi
 summary(resO23)
 ```
 
-WITHOUT SOIL Bacteria:
+### How much SOIL Bacteria?
 
-remove Soil bacteria before running DeSeq2
+#### Before (S28) to During (O01 + O03)
 
-subtract OCTOBER red soil bacteria from other October samples ... 
+total:
 ```{r}
-OTUwaterO <- data.frame(t(data.frame(otu_table(subset_samples(ps, Treat == "A" & Month == "Oct")))))
-OTUsoilO <- data.frame(t(data.frame(otu_table(subset_samples(ps, Treat == "RS" & Month =="Oct"))))) 
+OTUsoilO <- data.frame(otu_table(subset_samples(ps, Treat == "RS" & Month =="Oct"))) 
+OTUsoilO <-OTUsoilO[rowSums(OTUsoilO )>0,]
+#2,316 ASV in SOIL samples 
 
-OTUsoilO <- data.frame(OTUsoilO[,colSums(OTUsoilO) > 1])
-to.remove <- names(OTUsoilO)
-cleanWaterO <- as.data.frame(subset(OTUwaterO, select = names(OTUwaterO) %ni% to.remove))
+sigtabO12wSoil$Soil <- ifelse((row.names(sigtabO12wSoil)) %in% row.names(OTUsoilO), "Yes", "No")
 
-OTUo <- otu_table(as.matrix(cleanWaterO), taxa_are_rows = FALSE)
-
-ps.CWo<-phyloseq(OTUo, META2, TAX)
+sum(sigtabO12wSoil$Soil=="Yes")
 ```
 
-for Before v During 
-
+plot:
 ```{r}
-psFoct12 <- subset_samples(ps.CWo, Time == "28-Sep" | Time=="1-Oct" | Time =="3-Oct")
+sigtabO12wSoil$D3 <- substring(sigtabO12wSoil$D3, 6)
 
-OTUspsfieldOCT <- data.frame(t(otu_table(psFoct12)))
-aldex.in <-OTUspsfieldOCT[rowSums(OTUspsfieldOCT)>=0,]
+sigtabO12wSoil$ASV_ID <- row.names(sigtabO12wSoil)
 
-metatableO12<- metatable[metatable$Time  == "28-Sep" | metatable$Time=="1-Oct" | metatable$Time=="3-Oct",]
-metatableO12 <- metatableO12[,c("TreatRep", "BDA")]
-names(metatableO12) <- c("Replicate", "condition")
-metatableO12$name <- row.names(metatableO12)
-target <- names(OTUspsfieldOCT)
-metatableO12<-metatableO12[match(target, metatableO12$name),]
+sigtabO12wSoil_O <- sigtabO12wSoil[order(sigtabO12wSoil$D1),]
 
-sampleTable<- metatableO12
-ddseO12 <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2O12 <- DESeq(ddseO12, test="Wald", fitType="parametric" )
-resO12<- results(ddse2O12,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "D", "B"))
-summary(resO12)
-```
+sigtabO12wSoil_O <- sigtabO12wSoil_O %>% filter( D3 != "Chloroplast" & D3 != "uncultured bacterium" & D3 != "uncultured") %>% filter(!is.na(D3))
 
-```{r}
-sigtabO12sansSoil = resO12[which(resO12$padj < 0.05), ]
-```
+uniqueD3 <- unique(sigtabO12wSoil_O$D3)
 
-After v. Before
-```{r}
-sigtabO12wSoil$Soil <- ifelse((row.names(sigtabO12wSoil)) %in% row.names(sigtabO12sansSoil), "No", "Yes")
+sigtabO12wSoil_O$D3 <- factor(sigtabO12wSoil_O$D3, levels = uniqueD3)
 
-sum(sigtabO12wSoil$Soil=="No")
+sigplotOct12<- ggplot(sigtabO12wSoil_O, aes(x=D3, y=log2FoldChange, color = D1, shape = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +ggtitle("A. Oct 3/8 v. Sept. 28") + theme(text = element_text(size=12)) + xlab("")
+sigplotOct12 + theme(legend.position="none")
 ```
 
 
 ```{r}
-sigtabO12wSoil$D1 <- substring(sigtabO12wSoil$D1, 6)
+legend <- g_legend(sigplotOct12)
+SVlegend <- grid.arrange(legend)
+```
 
-sigplotOct12<- ggplot(sigtabO12wSoil, aes(x=D1, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() +
+
+```{r}
+sigplotOct12<- ggplot(sigtabO12wSoil_O, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() +
    ggtitle(" ") +
   theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ scale_color_manual(values= c("#628395", "#FC471E") ) +ggtitle("B. Oct 01 & Oct 03 v. Sept 28 ") +xlab("")
 sigplotOct12 
 ```
 
-Before to After
+#### Before (S28) to After (O08)
+
+total:
 ```{r}
-psFoct13 <- subset_samples(ps.CWo, Time == "28-Sep" | Time =="8-Oct")
+OTUsoilO <- data.frame(otu_table(subset_samples(ps, Treat == "RS" & Month =="Oct"))) 
+OTUsoilO <-OTUsoilO[rowSums(OTUsoilO )>0,]
+#2,316 ASV in SOIL samples 
 
-OTUspsfieldOCT <- data.frame(t(otu_table(psFoct13)))
-aldex.in <-OTUspsfieldOCT[rowSums(OTUspsfieldOCT)>=0,]
+sigtabO13wSoil = data.frame(resO13[which(resO13$padj < 0.05), ])
 
-metatableO13<- metatable[metatable$Time  == "28-Sep" | metatable$Time=="8-Oct",]
-metatableO13 <- metatableO13[,c("TreatRep", "BDA")]
-names(metatableO13) <- c("Replicate", "condition")
-metatableO13$name <- row.names(metatableO13)
-target <- names(OTUspsfieldOCT)
-metatableO13<-metatableO13[match(target, metatableO13$name),]
+sigtabO13wSoil$Soil <- ifelse((row.names(sigtabO13wSoil)) %in% row.names(OTUsoilO), "Yes", "No")
 
-sampleTable<- metatableO13
-ddseO12 <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2O12 <- DESeq(ddseO12, test="Wald", fitType="parametric" )
-resO12<- results(ddse2O12,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "A", "B"))
-summary(resO12)
+sum(sigtabO13wSoil$Soil=="Yes")
+```
+
+plot
+```{r}
+sigtabO13wSoil = cbind(as(sigtabO13wSoil, "data.frame"), as(tax_table(psF)[rownames(sigtabO13wSoil), ], "matrix"))
+
+sigtabO13wSoil$D3 <- substring(sigtabO13wSoil$D3, 6)
+
+sigtabO13wSoil$ASV_ID <- row.names(sigtabO13wSoil)
+
+sigtabO13wSoil_O <- sigtabO13wSoil[order(sigtabO13wSoil$D1),]
+
+sigtabO13wSoil_O <- sigtabO13wSoil_O %>% filter( D3 != "Chloroplast" & D3 != "uncultured bacterium" & D3 != "uncultured") %>% filter(!is.na(D3))
+
+uniqueD3 <- unique(sigtabO13wSoil_O$D3)
+
+sigtabO13wSoil_O$D3 <- factor(sigtabO13wSoil_O$D3, levels = uniqueD3)
+
+sigplotOct13<- ggplot(sigtabO13wSoil_O, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() +
+   ggtitle(" ") +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ scale_color_manual(values= c("#628395", "#FC471E") ) +ggtitle("B. Oct 08 v. Sept 28 ") +xlab("")
+sigplotOct13 
 ```
 
 
-During to After:
-```{r}
-psFoct23 <- subset_samples(ps.CWo, Time == "1-Oct" |Time == "1-Oct"| Time =="8-Oct")
-
-OTUspsfieldOCT <- data.frame(t(otu_table(psFoct23)))
-aldex.in <-OTUspsfieldOCT[rowSums(OTUspsfieldOCT)>=0,]
-
-metatableO23<- metatable[metatable$Time  == "1-Oct" | metatable$Time  == "3-Oct"| metatable$Time=="8-Oct",]
-metatableO23 <- metatableO23[,c("TreatRep", "BDA")]
-names(metatableO23) <- c("Replicate", "condition")
-metatableO23$name <- row.names(metatableO23)
-target <- names(OTUspsfieldOCT)
-metatableO23<-metatableO23[match(target, metatableO23$name),]
-
-sampleTable<- metatableO23
-ddseO12 <- DESeqDataSetFromMatrix(countData = aldex.in, colData = sampleTable, design = ~ condition)
-ddse2O12 <- DESeq(ddseO12, test="Wald", fitType="parametric" )
-resO12<- results(ddse2O12,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condition", "A", "D"))
-summary(resO12)
-```
-
-
-
-
-
+FACET
 
 ```{r}
-ggsave("Oct12_retest_foldchange.pdf", width=7, height =5)
+sigtabO12wSoil_O$test <- "DB"
+sigtabO13wSoil_O$test <- "AB"
+
+sigtabOfacet<- rbind(sigtabO12wSoil_O, sigtabO13wSoil_O)
+
+sigtabOfacet$log2FoldChange <- sigtabOfacet$log2FoldChange* -1
 ```
 
 
 ```{r}
-grid.arrange(sigplotJune12, sigplotOct12, ncol=1)
+Ofacetsigplot<- ggplot(sigtabOfacet, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + scale_color_manual(values= c("#628395", "#FC471E" ) )+ theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+ theme(text = element_text(size=12)) + xlab("") + facet_grid(~test, scales="free_x", space = "free")
+Ofacetsigplot + theme(legend.position="none")
 ```
+
 ```{r}
-ggsave("JuneOct_Deseq2.pdf", arrangeGrob(sigplotJune12, sigplotOct12, ncol=1), width = 8, height = 8)
+ggsave("Oct_Facet_Foldchange.pdf", width = 5, height = 4)
 ```
 
 
+#### During (O01 + O03) to After (O08)
+
+total:
+```{r}
+sigtabO23wSoil = resO23[which(resO23$padj < 0.05), ]
+sigtabO23wSoil$Soil <- ifelse((row.names(sigtabO23wSoil)) %in% row.names(OTUsoilO), "Yes", "No")
+sum(sigtabO23wSoil$Soil=="Yes")
+```
+
+
+## Number of differentially abundant ASV plots
+
+```{r}
+deseqRes<- read.csv("DESeq_results_revised.csv")
+deseqRes
+```
+
+```{r}
+deseqRes_melt <- melt(deseqRes, by = Comp)
+deseqRes_melt$Comp <- factor(deseqRes_melt$Comp, levels = c("BA", "DA", "BD"))
+
+dat1 <- subset(deseqRes_melt,value >= 0)
+dat2 <- subset(deseqRes_melt,value < 0)
+
+
+ggplot() + 
+    geom_bar(data = dat1, aes(x=Comp, y=value, fill=variable),stat = "identity") +
+    geom_bar(data = dat2, aes(x=Comp, y=value, fill=variable),stat = "identity") +
+    scale_fill_brewer(type = "seq", palette = 1) + facet_wrap(~Month, ncol =1, strip.position = c( "right")) + coord_flip()  + scale_fill_manual(values= c("#628395", "#FC471E", "#628395", "#FC471E")) + geom_hline(yintercept=0, color= "black") +
+  ylim(-275, 275) +  theme(legend.position="none") + xlab("Pairwise comparisons") + ylab("Number of differentially abundant ASVs") + theme(text = element_text(size=18))
+```
+
+```{r}
+#ggsave("numberofASVsPlot.pdf", width = 6, height =5)
+```
 
 

@@ -15,7 +15,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(cache=TRUE, fig.path='figures/', fig.width=8, fig.height=5 )
+knitr::opts_chunk$set(cache=TRUE, fig.path='figures/', fig.width=9, fig.height=5 )
 ```
 
 Load Packages: 
@@ -160,7 +160,7 @@ Prevalence is the percent of samples that an ASV is present in.
 
 ```{r prev_calc}
 prevdf = apply(X = otu_table(ps),
-               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+                MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
                FUN = function(x){sum(x > 0)})
 
 prevdf = data.frame(Prevalence = prevdf,
@@ -171,7 +171,7 @@ prevdf = data.frame(Prevalence = prevdf,
 Plot prevalence against total abundance. Low prevalence and low abundance ASVs are potential sequencing artifacts. 
 ```{r prev_plot, warning = FALSE}
 prevplot1<-ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(ps),color=D1)) +
-  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) + 
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
   theme_bw()+
   scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
   facet_wrap(~D1) + theme(legend.position="none")
@@ -230,6 +230,10 @@ max(denoise$non.chimeric) #153646
 mean(denoise$non.chimeric) #88033.78
 ```
 
+```{r, echo = FALSE}
+pigshit <- subset(OTUs, rownames(OTUs) %in% c("3483ac24a03fa9522b5e5b12c601c984", "43ba52a8d073cbb0a3d880da99d29044", "ef5b3e461f0dbfba4504cfbe3287682e"))
+```
+
 
 # Relative Abundance Plots
 
@@ -285,6 +289,39 @@ g_legend<-function(a.gplot){
 legend <- g_legend(taxabarplotD1)
 SVlegend <- grid.arrange(legend)
 ```
+
+### SAR-11
+
+```{r}
+sample_data(physeqPra) <- METArs
+
+
+sar11<- subset_taxa(physeqPra, D3 == "D_3__SAR11 clade")
+sar11_field<- subset_samples(sar11, Treat == "A" | Treat == "RS")
+
+  
+sar11D3<- tax_glom(sar11_field, "D3")
+```
+
+```{r}
+taxabarplotD1<-plot_bar(sar11D3, x= "Treatment", fill = "D3", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D3), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14))
+taxabarplotD1+ theme(legend.position="none")
+```
+
+### Synechococcales
+
+```{r}
+syn<- subset_taxa(physeqPra, D3 == "D_3__Synechococcales")
+syn_field<- subset_samples(syn, Treat == "A" | Treat == "RS")
+  
+synD3<- tax_glom(syn_field, "D3")
+```
+
+```{r}
+taxabarplotD1<-plot_bar(synD3, x= "Treatment", fill = "D3", facet_grid= ~Month) +  scale_y_continuous(expand = c(0, 0)) + ggtitle("") + scale_fill_manual(values=newcolors[3] ) + theme(legend.title=element_blank()) + geom_bar(aes(fill=D3), stat="identity", position="stack", width =0.9) +theme_classic() + theme(text = element_text(size=14))+theme(axis.text.x = element_text(angle = 90)) + xlab("Sample") +ylab("Relative Abundance(%)") + facet_grid(~Month,scales="free") + theme(text = element_text(size=14))
+taxabarplotD1+ theme(legend.position="none")
+```
+
 
 ### Class Level
 
@@ -476,16 +513,18 @@ baPlot
 ```
 
 
-# Distance and Ordination (PCoA)
+# Distance and Ordination
 
-*Atchison Distance*
+**Atchison Distance**
+
 (CLR + Euclidean)
+
 * compute CLR normalization, CLR = centered log-ratio, log(x/gx) where gx is the geomentric mean of vector x
 * Then Euclidean distance 
 * PCoA and/or PCA
 * PERMANOVA 
 
-Centered log-ratio transformation: 
+Centered log-ratio normalization: 
 ```{r clr_transform, message = FALSE, warning = FALSE}
 OTU4clr<- data.frame(t(data.frame(otu_table(ps))))
 row.names(OTU4clr) <- gsub("\\.", "", row.names(OTU4clr))
@@ -499,51 +538,75 @@ META2<- sample_data(metatable2)
 psCLR <- phyloseq(OTU2,TAX,META2)
 ```
 
-PCoA with All Samples:
-```{r allsample_pcoa, message=FALSE}
-ordu = ordinate(psCLR, "PCoA", "euclidean")
-plot_ordination(psCLR, ordu, color="Type", shape = "Month")+theme_bw() +scale_color_brewer(palette= "Paired")+ geom_point(size=4) +  theme(text = element_text(size=24))
-```
-
-## Field 
-
-```{r field_pcoa}
-psCLRfield <-  subset_samples(psCLR, Type == "Field") 
-ordu = ordinate(psCLRfield, "PCoA", "euclidean")
-
-p<-plot_ordination(psCLRfield, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_manual(values=c("#CC223B","#004488", "#CC223B", "#88CCEE", "#004488","#E6D02E" ,"#88CCEE"))+ geom_point(size=4) +  theme(text = element_text(size=24))
-
-p
-```
-
+## PCA for field samples
 
 PERMANOVA by month for all field samples: 
 ```{r field_permanova}
+psCLRfield <-  subset_samples(psCLR, Type == "Field") 
 
 OTUField <- data.frame(otu_table(psCLRfield))
-meta <- metatable2[row.names(metatable2) %in% row.names(OTUField),]
+metaF <- metatable2[row.names(metatable2) %in% row.names(OTUField),]
+
+adonis2(vegdist(OTUField , method = "euclidean") ~ Month, data = metaF)
+```
+
+```{r}
+distmat<- vegdist(OTUField, method = "euclidean") 
+
+PCfield <- princomp(distmat)
+library("factoextra")
+fviz_eig(PCfield, geom = "bar", bar_width = 0.4) + ggtitle("")
+```
+
+
+```{r}
+metaF$id<- row.names(metaF)
+metaF <- metaF[match(names(PCfield$scale), metaF$id),]
+ggbiplot(PCfield, var.axes = FALSE, obs.scale = 1, groups = metaF$Time) +theme_bw() +scale_color_manual(values=c("#CC223B","#004488", "#CC223B", "#88CCEE", "#004488","#E6D02E" ,"#88CCEE"), name = "") +  theme(text = element_text(size=18)) + theme(legend.position="none") +ggtitle("") + theme(legend.title = element_blank()) +geom_point(aes(color=metaF$Time, shape = metaF$Month, size = 4)) + scale_size_identity()  
+```
+
+June and October PCAs: 
+
+```{r}
+psCLRfieldjune <-  subset_samples(psCLRfield, Month == "June")
+OTUsJuneField <- data.frame(otu_table(psCLRfieldjune))
+metaJ <- metatable2[row.names(metatable2) %in% row.names(OTUsJuneField),]
 
 set.seed(1)
-adonis2(vegdist(OTUField , method = "euclidean") ~ Month, data = meta)
+
+distmat<- vegdist(OTUsJuneField, method = "euclidean") 
+
+PCjune <- princomp(distmat)
+fviz_eig(PCjune, geom = "bar", bar_width = 0.4) + ggtitle("")
 ```
 
 
-June and October separate PCoA: 
-```{r juneField_pcoa}
-psCLRfieldjune <-  subset_samples(psCLRfield, Month == "June") 
-ordu = ordinate(psCLRfieldjune, "PCoA", "euclidean")
-pJune<-plot_ordination(psCLRfieldjune, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B", "#88CCEE"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("A. June") + theme(legend.title = element_blank())
+```{r}
+metaJ$id<- row.names(metaJ)
+metaJ <- metaJ[match(names(PCjune$scale), metaJ$id),]
+ggbiplot(PCjune, var.axes = FALSE, obs.scale = 1, groups = metaJ$Time) +theme_bw() +scale_color_manual(values=c("#004488", "#CC223B", "#88CCEE"), name = "") +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("A. June") + theme(legend.title = element_blank()) +geom_point(aes(color=metaJ$Time, size = 4)) + scale_size_identity()
+```
 
 
+```{r}
 psCLRfieldOct <-  subset_samples(psCLR, Month == "Oct" & Type == "Field") 
-ordu = ordinate(psCLRfieldOct, "PCoA", "euclidean")
+OTUsOctField <- data.frame(otu_table(psCLRfieldOct))
+metaO <- metatable2[row.names(metatable2) %in% row.names(OTUsOctField),]
+set.seed(1)
 
-pOct<-plot_ordination(psCLRfieldOct, ordu, color="Time")+theme_bw() +scale_color_manual(values=c("#004488", "#CC223B","#E6D02E" ,"#88CCEE"), limits=c("28-Sep", "1-Oct", "3-Oct", "8-Oct"), name = "")+ geom_point(size=4) +  theme(text = element_text(size=18))+ theme(legend.position="bottom") + ggtitle("B. October")
+distmatO<- vegdist(OTUsOctField, method = "euclidean") 
 
-
-grid.arrange(pJune, pOct, ncol=2)
-#ggsave("JuneOct_sepPCoA.pdf", arrangeGrob(pJune, pOct, ncol=2), width = 10, height = 6)
+PCoct <- princomp(distmatO)
+fviz_eig(PCoct, geom = "bar", bar_width = 0.4) + ggtitle("")
 ```
+
+
+```{r}
+metaO$id<- row.names(metaO)
+metaO <- metaO[match(names(PCoct$scale), metaO$id),]
+ggbiplot(PCoct, var.axes = FALSE, obs.scale = 1, groups = metaO$Time) +theme_bw() +scale_color_manual(values=c("#004488", "#CC223B","#E6D02E" ,"#88CCEE"), limits=c("28-Sep", "1-Oct", "3-Oct", "8-Oct"), name = "") +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("B. October") + theme(legend.title = element_blank()) +geom_point(aes(color=metaO$Time, size = 4)) + scale_size_identity()
+```
+
 
 PERMANOVA by sampling date in June:
 ```{r june_sampleDate_permanova}
@@ -572,36 +635,85 @@ adonis(vegdist(OTUsOctField, method = "euclidean") ~ BDA, data = meta)
 ```
 
 
-## Mesocosms 
+## PCA for Mesocosms 
 
-All mesocosm samples together:
-```{r meso_juneOct_pcoa}
-psCLRmeso <-  subset_samples(psCLR, Type == "Meso" & Time != "t6") 
-ordu = ordinate(psCLRmeso, "PCoA", "euclidean")
-pMeso<-plot_ordination(psCLRmeso, ordu, color="Time", shape = "Month")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=24))
-pMeso
-```
+**June**
 
-June & October Mesocosms plotted separately: 
-```{r JuneOct_AB_meso_pcoa}
+```{r}
 psCLRmesoJ <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="June" & Treat != "F")  
-ordu = ordinate(psCLRmesoJ, "PCoA", "euclidean")
-pMesoJune<-plot_ordination(psCLRmesoJ, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) +  theme(text = element_text(size=16))+ ggtitle("A. June") + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment")
 
+OTUsMJ <- data.frame(otu_table(psCLRmesoJ))
+metaMJ <- metatable2[row.names(metatable2) %in% row.names(OTUsMJ),]
+
+distmat<- vegdist(OTUsMJ , method = "euclidean") 
+
+PCmj <- princomp(distmat)
+fviz_eig(PCmj, geom = "bar", bar_width = 0.4) + ggtitle("")
+```
+
+```{r}
+metaMJ$id<- row.names(metaMJ)
+metaMJ <- metaMJ[match(names(PCmj$scale), metaMJ$id),]
+metaMJ$Time <- as.character(metaMJ$Time)
+ggbiplot(PCmj, var.axes = FALSE, obs.scale = 1, groups = metaMJ$Time) +theme_bw() +scale_color_jcolors(palette="pal7", name = "Time") +  theme(text = element_text(size=18)) + theme(legend.position="none") +ggtitle("A. June") + theme(legend.title = element_blank()) +geom_point(aes(color=metaMJ$Time, shape = metaMJ$Treat, size = 4)) + scale_size_identity()
+```
+
+**October**
+
+```{r}
 psCLRmesoO <-  subset_samples(psCLR, Type == "Meso" & Time != "t6" & Month =="Oct" &Treat != "F") 
-ordu = ordinate(psCLRmesoO, "PCoA", "euclidean")
-pMesoOct<-plot_ordination(psCLRmesoO, ordu, color="Time", shape = "Treat")+theme_bw() +scale_color_jcolors(palette="pal7", name = "Time")+ geom_point(size=4) + scale_shape_manual(values = c(19,17), labels= c("Control", "Red Soil"), name = "Treatment") + theme(text = element_text(size=16)) +ggtitle("B. October")
 
-ggarrange(pMesoJune, pMesoOct,   common.legend = TRUE, legend = "bottom")
-#ggsave("MESO_PCoA.png", width = 8, height = 5)
+OTUsMO <- data.frame(otu_table(psCLRmesoO))
+metaMO <- metatable2[row.names(metatable2) %in% row.names(OTUsMO),]
+
+distmat<- vegdist(OTUsMO , method = "euclidean") 
+
+PCmo <- princomp(distmat)
+fviz_eig(PCmo, geom = "bar", bar_width = 0.4) + ggtitle("")
 ```
 
 
-
-
-
+```{r}
+metaMO$id<- row.names(metaMO)
+metaMO <- metaMO[match(names(PCmo$scale), metaMO$id),]
+metaMO$Time <- as.character(metaMO$Time)
+ggbiplot(PCmo, var.axes = FALSE, obs.scale = 1, groups = metaMO$Time) +theme_bw() +scale_color_jcolors(palette="pal7", name = "Time") +  theme(text = element_text(size=18)) + theme(legend.position="bottom") +ggtitle("B. October") + theme(legend.title = element_blank()) +geom_point(aes(color=metaMO$Time, shape = metaMO$Treat, size = 4)) + scale_size_identity()
+```
 
 # Differential Abundance Testing (DESeq2)
+
+Load metadata:
+```{r load_metadata_forDESeq, warning = FALSE, message = FALSE}
+metatable <- read.csv("JuneOctSampleMap.csv", header = TRUE)
+row.names(metatable) <- metatable[["SampleID"]]
+detach("package:dplyr", unload=TRUE)
+library("dplyr")
+metatable <- metatable %>% select(SampleID, everything())
+#convert to phyloseq object
+META<- sample_data(metatable)
+```
+
+Load taxonomy:
+```{r load_tax_forDESeq}
+taxonomy <- read.csv("JuneOctTaxonomy.csv", stringsAsFactors = FALSE)
+names(taxonomy) <- c("row", "tax", "Confidence")
+row.names(taxonomy) <-taxonomy[[1]]
+taxonomy <- taxonomy[,(-1)]
+
+#SILVA taxonomy is in one column, separate to be able to work with different taxonomic levels:
+taxonomy <-  separate(taxonomy, tax, c("D0","D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14"), sep = ";", fill = "right")
+#Keep the first 8 taxonomic levels (no assignments afetr that)
+taxonomy <- taxonomy[,c(1:8)]
+taxmat <- as.matrix(taxonomy)
+#covert taxonomy table to phyloseq object
+TAX = tax_table(taxmat)
+```
+
+create phyloseq object including feature table, taxonomy, and metadata:
+```{r make_ps_forDESeq}
+ps = merge_phyloseq(phyloseq, TAX, META)
+
+```
 
 ## June
 
@@ -626,8 +738,6 @@ names(metatableJ12) <- c("Replicate", "condition")
 metatableJ12$name <- row.names(metatableJ12)
 target <- names(OTUspsfieldjune)
 metatableJ12<-metatableJ12[match(target, metatableJ12$name),]
-
-OTUspsfieldjune<- OTUspsfieldjune[rowSums(OTUspsfieldjune)>=0,]
 
 ```
 
@@ -658,9 +768,23 @@ sigtabJ12wSoil = cbind(as(sigtabJ12wSoil, "data.frame"), as(tax_table(psF)[rowna
 
 Fold Change Figure for Significant SVs:
 ```{r}
-sigplot<- ggplot(sigtabJ12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("June 16 v. June 13 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+sigplot<- ggplot(sigtabJ12wSoil, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("June 16 v. June 13 - Significantly different ASVs") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
 sigplot + theme(legend.position="none")
 ```
+
+Fold Change figure for all results (not just those that are significant)
+
+```{r}
+results <- as.data.frame(resJ12)
+
+results = cbind(as(results, "data.frame"), as(tax_table(psF)[rownames(results), ], "matrix"))
+
+resplot<- ggplot(results, aes(x=D1, y=log2FoldChange, color = D1)) + geom_jitter(size=1.5, alpha = 0.7) + theme(legend.title=element_blank()) + theme_bw() + ggtitle("June 16 v. June 13 ") + theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+resplot + theme(legend.position="none")
+```
+
+This plot shows that there is not actually clustering of logFC around 10 and 20, that only appears to be the when fold changes that are not significant are excluded from the plot (with logFC 0-|~10|).
 
 ### Before (J13) to After (J19)
 
@@ -737,7 +861,6 @@ resJ23<- results(ddse2J23,alpha = 0.05, cooksCutoff = FALSE, contrast = c("condi
 summary(resJ23)
 ```
 
-
 ### How much SOIL Bacteria?
 
 #### Before (J13) to During (J16)
@@ -788,7 +911,6 @@ legend <- g_legend(sigplotJune12)
 SVlegend <- grid.arrange(legend)
 ```
  
-
 ```{r}
 sigplotJune12<- ggplot(sigtabJ12wSoil_O, aes(x=D3, y=log2FoldChange, color = Soil)) + geom_jitter(size=1, alpha = 0.8) + theme(legend.title=element_blank()) + theme_bw() + scale_color_manual(values= c("#628395", "#FC471E" ) )+ theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +ggtitle("A. June 16 v. June 13") + theme(text = element_text(size=12)) + xlab("")
 sigplotJune12 + theme(legend.position="none")
@@ -884,7 +1006,7 @@ sum(sigtabJ23wSoil[sigtabJ23wSoil$log2FoldChange<0,]$Soil=="Yes")
 ```
 
 
-## OCTOBER
+## October
 
 ### Before (S28) to During (O01 + O03)
 
@@ -1102,4 +1224,9 @@ ggplot() +
 #ggsave("numberofASVsPlot.pdf", width = 6, height =5)
 ```
 
+
+# Session Info
+```{r}
+sessionInfo()
+```
 
